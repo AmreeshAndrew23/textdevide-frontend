@@ -1,8 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, memo, useRef, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/client";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
+const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -12,7 +15,7 @@ export default function Dashboard() {
   const [activeSection, setActiveSection] = useState("schema");
 
   const [showNewModal, setShowNewModal] = useState(false);
-  const [newName, setNewName] = useState("Untitled Project");
+  const [newName, setNewName] = useState("");
   const [newLanguage, setNewLanguage] = useState("Python");
 
   const [description, setDescription] = useState("");
@@ -27,29 +30,26 @@ export default function Dashboard() {
   const [validationCode, setValidationCode] = useState("");
   const [validationLoading, setValidationLoading] = useState(false);
 
-  const [uiDescription, setUIDescription] = useState("");
-  const [uiCode, setUICode] = useState("");
-  const [uiLoading, setUILoading] = useState(false);
-  const [showUiCode, setShowUiCode] = useState(false);
+  const [frontendLang, setFrontendLang] = useState("React");
+
+  // Multi-screen state
+  const [screens, setScreens] = useState([]);
+  const [activeScreenId, setActiveScreenId] = useState(null);
+  const [screenName, setScreenName] = useState("");
+  const [screenDesc, setScreenDesc] = useState("");
+  const [screenXml, setScreenXml] = useState("");
+  const [screenHtml, setScreenHtml] = useState("");
+  const [screenApi, setScreenApi] = useState("");
+  const [screenTab, setScreenTab] = useState("html");
+  const [screenXmlLoading, setScreenXmlLoading] = useState(false);
+  const [screenHtmlLoading, setScreenHtmlLoading] = useState(false);
+  const [screenApiLoading, setScreenApiLoading] = useState(false);
+  const [showScreenCode, setShowScreenCode] = useState(false);
 
   useEffect(() => { fetchProjects(); }, []);
 
   const fetchProjects = async () => {
-    try {
-      const res = await api.get("/projects");
-      setProjects(res.data);
-    } catch (err) { console.error("Failed to fetch projects", err); }
-  };
-
-  const handleCreateProject = async () => {
-    if (!newName.trim()) return;
-    try {
-      const res = await api.post("/projects", { name: newName, language: newLanguage });
-      setProjects([res.data, ...projects]);
-      selectProject(res.data);
-      setShowNewModal(false);
-      setNewName("Untitled Project");
-    } catch (err) { console.error("Failed to create project", err); }
+    try { setProjects((await api.get("/projects")).data); } catch (e) { console.error(e); }
   };
 
   const selectProject = (data) => {
@@ -59,411 +59,736 @@ export default function Dashboard() {
     setActiveSection("schema");
     setValidationRules(data.validation_rules || "");
     setValidationCode(data.validation_code || "");
-    setUIDescription(data.ui_description || "");
-    setUICode(data.ui_code || "");
-    setError("");
-    setSaveMsg("");
+    setFrontendLang(data.frontend_language || "React");
+    const parsedScreens = data.ui_screens ? (() => { try { return JSON.parse(data.ui_screens); } catch { return []; } })() : [];
+    setScreens(parsedScreens);
+    setActiveScreenId(null);
+    setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
+    setScreenTab("html"); setShowScreenCode(false);
+    setError(""); setSaveMsg("");
   };
 
-  const handleSelect = async (project) => {
+  const handleCreateProject = async () => {
+    if (!newName.trim()) return;
     try {
-      const res = await api.get(`/projects/${project.id}`);
+      const res = await api.post("/projects", { name: newName, language: newLanguage });
+      setProjects([res.data, ...projects]);
       selectProject(res.data);
-    } catch (err) { console.error("Failed to load project", err); }
+      setShowNewModal(false); setNewName("");
+    } catch (e) { console.error(e); }
+  };
+
+  const handleSelect = async (p) => {
+    try { selectProject((await api.get(`/projects/${p.id}`)).data); } catch (e) { console.error(e); }
   };
 
   const handleDelete = async (id, e) => {
     e.stopPropagation();
     try {
       await api.delete(`/projects/${id}`);
-      setProjects(projects.filter((p) => p.id !== id));
+      setProjects(projects.filter(p => p.id !== id));
       if (selectedProject?.id === id) setSelectedProject(null);
-    } catch (err) { console.error("Failed to delete project", err); }
-  };
-
-  const handleSave = async () => {
-    try {
-      const updates = { description, features };
-      if (description.trim()) updates.name = description.substring(0, 40).trim();
-      const res = await api.put(`/projects/${selectedProject.id}`, updates);
-      setSelectedProject(res.data);
-      fetchProjects();
-    } catch (err) { setError(err.response?.data?.detail || "Save failed"); }
+    } catch (e) { console.error(e); }
   };
 
   const handleSaveToMongo = async () => {
     setSaveMsg("");
     try {
       await api.post(`/projects/${selectedProject.id}/save-to-mongo`);
-      setSaveMsg("Saved to MongoDB!");
+      setSaveMsg("Project saved successfully!");
       setTimeout(() => setSaveMsg(""), 3000);
-    } catch (err) {
-      setError(err.response?.data?.detail || "Failed to save to MongoDB");
-    }
+    } catch (err) { setError(err.response?.data?.detail || "Save failed"); }
   };
 
   const handleExtract = async () => {
-    if (!description.trim() || !features.trim()) {
-      setError("Please fill in both Project Description and Detailed Features");
-      return;
-    }
+    if (!description.trim() || !features.trim()) { setError("Please fill in both fields"); return; }
     setLoading(true); setError("");
     try {
       const res = await api.post(`/projects/${selectedProject.id}/extract`, { description, features });
       setSelectedProject(res.data);
-      const name = description.substring(0, 40).trim() || "Untitled";
-      await api.put(`/projects/${selectedProject.id}`, { name });
+      setValidationCode(res.data.validation_code || "");
+      await api.put(`/projects/${selectedProject.id}`, { name: description.substring(0, 40).trim() || "Untitled" });
       fetchProjects();
-    } catch (err) {
-      setError(err.response?.data?.detail || "Extraction failed");
-    } finally { setLoading(false); }
+    } catch (err) { setError(err.response?.data?.detail || "Extraction failed"); }
+    finally { setLoading(false); }
   };
 
   const handleRefine = async () => {
     if (!refineText.trim()) return;
     setLoading(true); setError("");
     try {
-      const res = await api.post(`/projects/${selectedProject.id}/refine`, {
-        entities: selectedProject.entities,
-        instruction: refineText,
-      });
-      setSelectedProject(res.data);
-      setRefineText("");
-      fetchProjects();
-    } catch (err) {
-      setError(err.response?.data?.detail || "Refinement failed");
-    } finally { setLoading(false); }
+      const res = await api.post(`/projects/${selectedProject.id}/refine`, { entities: selectedProject.entities, instruction: refineText });
+      setSelectedProject(res.data); setRefineText(""); fetchProjects();
+    } catch (err) { setError(err.response?.data?.detail || "Refinement failed"); }
+    finally { setLoading(false); }
   };
 
   const handleFinalize = async () => {
-    try {
-      const res = await api.post(`/projects/${selectedProject.id}/finalize`);
-      setSelectedProject(res.data);
-      fetchProjects();
-    } catch (err) { setError(err.response?.data?.detail || "Finalize failed"); }
+    try { const res = await api.post(`/projects/${selectedProject.id}/finalize`); setSelectedProject(res.data); fetchProjects(); }
+    catch (err) { setError(err.response?.data?.detail || "Failed"); }
   };
 
   const handleUnlock = async () => {
-    try {
-      const res = await api.post(`/projects/${selectedProject.id}/unlock`);
-      setSelectedProject(res.data);
-      fetchProjects();
-    } catch (err) { setError(err.response?.data?.detail || "Unlock failed"); }
+    try { const res = await api.post(`/projects/${selectedProject.id}/unlock`); setSelectedProject(res.data); fetchProjects(); }
+    catch (err) { setError(err.response?.data?.detail || "Failed"); }
   };
 
-  const handleDownload = async (format) => {
+  const handleDownload = async (fmt) => {
     try {
-      const res = await api.get(`/projects/${selectedProject.id}/download-${format}`, { responseType: "blob" });
-      const ext = format === "json" ? "json" : "sql";
-      const name = (selectedProject.name || "schema").toLowerCase().replace(/\s+/g, "_");
-      const blob = new Blob([res.data]);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = `${name}_schema.${ext}`; a.click();
-      URL.revokeObjectURL(url);
+      const res = await api.get(`/projects/${selectedProject.id}/download-${fmt}`, { responseType: "blob" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([res.data]));
+      a.download = `${(selectedProject.name || "schema").toLowerCase().replace(/\s+/g, "_")}_schema.${fmt}`;
+      a.click();
     } catch (err) { setError(err.response?.data?.detail || "Download failed"); }
   };
 
-  const handleGenerateValidation = async () => {
+  const handleClearValidation = async () => {
+    try {
+      const res = await api.put(`/projects/${selectedProject.id}`, { validation_code: "", validation_rules: "" });
+      setSelectedProject(res.data);
+      setValidationCode("");
+      setValidationRules("");
+    } catch (err) { setError(err.response?.data?.detail || "Clear failed"); }
+  };
+
+  const handleDeleteFile = (filename) => {
+    const files = parseFiles(validationCode);
+    const remaining = files.filter(f => f.name !== filename);
+    const newCode = remaining.map(f => `=== FILENAME: ${f.name} ===\n${f.code}`).join("\n\n");
+    setValidationCode(newCode);
+    api.put(`/projects/${selectedProject.id}`, { validation_code: newCode });
+  };
+
+  const handleGenValidation = async () => {
     if (!validationRules.trim()) return;
     setValidationLoading(true); setError("");
     try {
       const res = await api.post(`/projects/${selectedProject.id}/generate-validation`, { rules: validationRules });
-      setSelectedProject(res.data);
-      setValidationCode(res.data.validation_code || "");
-    } catch (err) {
-      setError(err.response?.data?.detail || "Validation generation failed");
-    } finally { setValidationLoading(false); }
+      setSelectedProject(res.data); setValidationCode(res.data.validation_code || "");
+      setValidationRules("");
+    } catch (err) { setError(err.response?.data?.detail || "Generation failed"); }
+    finally { setValidationLoading(false); }
   };
 
-  const handleGenerateUI = async () => {
-    if (!uiDescription.trim()) return;
-    setUILoading(true); setError("");
+  const handleFrontendLangChange = async (val) => {
+    setFrontendLang(val);
     try {
-      const res = await api.post(`/projects/${selectedProject.id}/generate-ui`, { description: uiDescription });
-      setSelectedProject(res.data);
-      setUICode(res.data.ui_code || "");
-    } catch (err) {
-      setError(err.response?.data?.detail || "UI generation failed");
-    } finally { setUILoading(false); }
+      await api.put(`/projects/${selectedProject.id}`, { frontend_language: val });
+    } catch (e) { console.error(e); }
   };
 
-  const downloadCode = (code, filename) => {
-    const blob = new Blob([code], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
+  // Sync screens from API response
+  const _syncScreens = (data) => {
+    setSelectedProject(data);
+    const parsed = data.ui_screens ? (() => { try { return JSON.parse(data.ui_screens); } catch { return []; } })() : [];
+    setScreens(parsed);
+    return parsed;
   };
 
-  const toggleTable = (key) => setExpandedTables((prev) => ({ ...prev, [key]: !prev[key] }));
+  const handleSelectScreen = (screen) => {
+    setActiveScreenId(screen.id);
+    setScreenName(screen.name);
+    setScreenDesc(screen.description || "");
+    setScreenXml(screen.xml || "");
+    setScreenHtml(screen.html || "");
+    setScreenApi(screen.api || "");
+    setScreenTab(screen.html ? "html" : screen.xml ? "xml" : "html");
+    setShowScreenCode(false);
+    setError("");
+  };
 
-  const parsedEntities = selectedProject?.entities ? (() => { try { return JSON.parse(selectedProject.entities); } catch { return null; } })() : null;
-  const tableCount = parsedEntities?.tables?.length || 0;
-  const drafts = projects.filter((p) => p.status === "draft");
-  const finalized = projects.filter((p) => p.status === "finalized");
-  const getTableCount = (p) => { try { return JSON.parse(p.entities)?.tables?.length || 0; } catch { return 0; } };
+  const handleNewScreen = () => {
+    setActiveScreenId(null);
+    setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
+    setScreenTab("html"); setShowScreenCode(false); setError("");
+  };
+
+  const handleDeleteScreen = async (screenId) => {
+    try {
+      const res = await api.delete(`/projects/${selectedProject.id}/screens/${screenId}`);
+      _syncScreens(res.data);
+      if (activeScreenId === screenId) handleNewScreen();
+    } catch (err) { setError(err.response?.data?.detail || "Delete failed"); }
+  };
+
+  const handleGenerateScreen = async () => {
+    if (!screenDesc.trim()) { setError("Enter a screen description first"); return; }
+    setError("");
+    setScreenXmlLoading(true);
+    let currentScreenId = activeScreenId;
+
+    // Create screen entry if new
+    if (!currentScreenId) {
+      const name = screenName.trim() || screenDesc.substring(0, 40).trim();
+      try {
+        const res = await api.post(`/projects/${selectedProject.id}/screens`, { name, description: screenDesc });
+        const parsed = _syncScreens(res.data);
+        currentScreenId = parsed[parsed.length - 1].id;
+        setActiveScreenId(currentScreenId);
+        setScreenName(name);
+      } catch (err) { setError(err.response?.data?.detail || "Failed to create screen"); setScreenXmlLoading(false); return; }
+    } else {
+      // Save name/description update first
+      try {
+        const res = await api.put(`/projects/${selectedProject.id}/screens/${currentScreenId}`, { name: screenName, description: screenDesc });
+        _syncScreens(res.data);
+      } catch (e) { /* non-critical */ }
+    }
+
+    // Generate XML
+    setScreenXml(""); setScreenHtml(""); setScreenApi("");
+    let freshXml = "";
+    try {
+      const xmlRes = await api.post(`/projects/${selectedProject.id}/screens/${currentScreenId}/generate-xml`, { description: screenDesc });
+      const parsed = _syncScreens(xmlRes.data);
+      const updated = parsed.find(s => s.id === currentScreenId);
+      freshXml = updated?.xml || "";
+      setScreenXml(freshXml);
+      setScreenTab("xml");
+    } catch (err) { setError(err.response?.data?.detail || "XML generation failed"); setScreenXmlLoading(false); return; }
+    setScreenXmlLoading(false);
+
+    // Auto-chain HTML
+    if (!freshXml) return;
+    setScreenHtmlLoading(true);
+    try {
+      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${currentScreenId}/generate-html`, { xml: freshXml, frontend_lang: frontendLang });
+      const parsed = _syncScreens(htmlRes.data);
+      const updated = parsed.find(s => s.id === currentScreenId);
+      setScreenHtml(updated?.html || "");
+      setScreenTab("html");
+    } catch (err) { setError(err.response?.data?.detail || "HTML generation failed"); }
+    finally { setScreenHtmlLoading(false); }
+  };
+
+  const handleRegenHtml = async () => {
+    if (!screenXml || !activeScreenId) return;
+    setScreenHtmlLoading(true); setError("");
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-html`, { xml: screenXml, frontend_lang: frontendLang });
+      const parsed = _syncScreens(res.data);
+      const updated = parsed.find(s => s.id === activeScreenId);
+      setScreenHtml(updated?.html || "");
+      setScreenTab("html");
+    } catch (err) { setError(err.response?.data?.detail || "HTML generation failed"); }
+    finally { setScreenHtmlLoading(false); }
+  };
+
+  const handleGenScreenApi = async () => {
+    if (!screenXml || !activeScreenId) return;
+    setScreenApiLoading(true); setError("");
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-api`, { xml: screenXml });
+      const parsed = _syncScreens(res.data);
+      const updated = parsed.find(s => s.id === activeScreenId);
+      setScreenApi(updated?.api || "");
+      setScreenTab("api");
+    } catch (err) { setError(err.response?.data?.detail || "API generation failed"); }
+    finally { setScreenApiLoading(false); }
+  };
+
+  const downloadCode = (code, name) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([code], { type: "text/plain" }));
+    a.download = name; a.click();
+  };
+
+  const toggle = (k) => setExpandedTables(p => ({ ...p, [k]: !p[k] }));
+
+  const entities = useMemo(() => {
+    if (!selectedProject?.entities) return null;
+    try { return JSON.parse(selectedProject.entities); } catch { return null; }
+  }, [selectedProject?.entities]);
+  const drafts = useMemo(() => projects.filter(p => p.status === "draft"), [projects]);
+  const finalized = useMemo(() => projects.filter(p => p.status === "finalized"), [projects]);
+  const tblCount = (p) => { try { return JSON.parse(p.entities)?.tables?.length || 0; } catch { return 0; } };
+  const lang = selectedProject?.language || "Python";
+  const fileExt = lang === "Python" ? "py" : lang === "Java" ? "java" : lang === "TypeScript" ? "ts" : "js";
+
+  const parseFiles = (code) => {
+    if (!code) return [];
+    const parts = code.split(/^=== FILENAME:\s*(.+?)\s*===$/m);
+    if (parts.length <= 1) return [{ name: `code.${fileExt}`, code: code.trim() }];
+    const files = [];
+    for (let i = 1; i < parts.length; i += 2) {
+      if (parts[i] && parts[i + 1]?.trim()) files.push({ name: parts[i].trim(), code: parts[i + 1].trim() });
+    }
+    return files.length > 0 ? files : [{ name: `code.${fileExt}`, code: code.trim() }];
+  };
+
+  const syntaxLang = (filename) => {
+    const ext = filename.split(".").pop()?.toLowerCase();
+    const map = { py: "python", java: "java", js: "javascript", ts: "typescript", jsx: "jsx", tsx: "tsx", html: "html", css: "css", cs: "csharp", go: "go", rb: "ruby", php: "php", sql: "sql", json: "json" };
+    return map[ext] || "javascript";
+  };
+
+  const sectionGroups = [
+    {
+      heading: "WORKSPACE",
+      items: [
+        { key: "schema", label: "Database Schema" },
+        { key: "validation", label: "Validation" },
+        { key: "ui", label: "User Interface" },
+      ],
+    },
+    {
+      heading: "ARCHITECT VIEW",
+      items: [
+        { key: "arch-db", label: "DB Schema" },
+        { key: "arch-validation", label: "Validation" },
+        { key: "arch-ui", label: "User Interface" },
+      ],
+    },
+  ];
 
   return (
-    <div style={styles.container}>
+    <div style={S.wrap}>
+      {/* Modal */}
       {showNewModal && (
-        <div style={styles.modalOverlay}>
-          <div style={styles.modalCard}>
-            <h3 style={styles.modalTitle}>New Project</h3>
-            <input type="text" placeholder="Project Name" value={newName}
-              onChange={(e) => setNewName(e.target.value)} style={styles.input} />
-            <label style={styles.label}>Target Language</label>
-            <select value={newLanguage} onChange={(e) => setNewLanguage(e.target.value)} style={styles.select}>
-              {LANGUAGES.map((l) => <option key={l} value={l}>{l}</option>)}
+        <div style={S.overlay} onClick={() => setShowNewModal(false)}>
+          <div className="card fade-in" style={S.modal} onClick={e => e.stopPropagation()}>
+            <h3 style={S.modalH}>Create New Project</h3>
+            <p style={S.modalSub}>Give your project a name and choose a language</p>
+            <label style={S.lbl}>Project Name</label>
+            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="My awesome project" style={S.inp} autoFocus />
+            <label style={S.lbl}>Target Language</label>
+            <select value={newLanguage} onChange={e => setNewLanguage(e.target.value)} style={S.sel}>
+              {LANGUAGES.map(l => <option key={l}>{l}</option>)}
             </select>
-            <div style={styles.modalActions}>
-              <button onClick={handleCreateProject} style={styles.extractBtn}>Create</button>
-              <button onClick={() => setShowNewModal(false)} style={styles.cancelBtn}>Cancel</button>
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              <button className="btn-primary" onClick={handleCreateProject} style={{ flex: 1, justifyContent: "center" }}>Create Project</button>
+              <button className="btn-secondary" onClick={() => setShowNewModal(false)}>Cancel</button>
             </div>
           </div>
         </div>
       )}
 
-      <div style={{ ...styles.sidebar, width: sidebarOpen ? "250px" : "0px", padding: sidebarOpen ? "16px" : "0px", overflow: "hidden" }}>
-        <div style={styles.sidebarHeader}><h2 style={styles.logo}>Text Dev IDE</h2></div>
-        <button onClick={() => setShowNewModal(true)} style={styles.newProjectBtn}>+ New Project</button>
-        <div style={styles.projectList}>
-          <p style={styles.sectionLabel}>DRAFTS</p>
-          {drafts.length === 0 && <p style={styles.emptyText}>No drafts</p>}
-          {drafts.map((p) => (
-            <ProjectItem key={p.id} project={p} selected={selectedProject?.id === p.id}
-              onSelect={handleSelect} onDelete={handleDelete} tableCount={getTableCount(p)}
-              activeSection={activeSection} onSectionChange={setActiveSection} />
-          ))}
-          <p style={{ ...styles.sectionLabel, marginTop: "16px" }}>FINALIZED</p>
-          {finalized.length === 0 && <p style={styles.emptyText}>No finalized projects</p>}
-          {finalized.map((p) => (
-            <ProjectItem key={p.id} project={p} selected={selectedProject?.id === p.id}
-              onSelect={handleSelect} onDelete={handleDelete} tableCount={getTableCount(p)}
-              activeSection={activeSection} onSectionChange={setActiveSection} />
-          ))}
+      {/* Sidebar */}
+      <aside style={{ ...S.side, width: sidebarOpen ? 260 : 0, padding: sidebarOpen ? "20px 16px" : 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <h1 style={S.logo}>Text Dev IDE</h1>
         </div>
-        <div style={styles.sidebarFooter}>
-          <div style={styles.userSection}>
-            {user?.picture && <img src={user.picture} alt="" style={styles.avatar} />}
-            <span style={styles.userName}>{user?.full_name || user?.email}</span>
+        <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ width: "100%", justifyContent: "center", marginBottom: 24 }}>
+          + New Project
+        </button>
+
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <SectionHeader text="DRAFTS" count={drafts.length} />
+          {drafts.length === 0 && <p style={S.muted}>No draft projects</p>}
+          {drafts.map(p => <SideItem key={p.id} p={p} sel={selectedProject?.id === p.id} onSel={handleSelect} onDel={handleDelete} tc={tblCount(p)} sec={activeSection} setSec={setActiveSection} sectionGroups={sectionGroups} />)}
+
+          <SectionHeader text="FINALIZED" count={finalized.length} />
+          {finalized.length === 0 && <p style={S.muted}>No finalized projects</p>}
+          {finalized.map(p => <SideItem key={p.id} p={p} sel={selectedProject?.id === p.id} onSel={handleSelect} onDel={handleDelete} tc={tblCount(p)} sec={activeSection} setSec={setActiveSection} sectionGroups={sectionGroups} />)}
+        </div>
+
+        <div style={{ borderTop: "1px solid #333", paddingTop: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            {user?.picture ? <img src={user.picture} style={{ width: 32, height: 32, borderRadius: "50%" }} /> : <div style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(99,102,241,0.18)", display: "flex", alignItems: "center", justifyContent: "center", color: "#818cf8", fontWeight: 700, fontSize: 14 }}>{(user?.full_name || user?.email || "U")[0].toUpperCase()}</div>}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#cfcfcf", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user?.full_name || "User"}</div>
+              <div style={{ fontSize: 11, color: "#7a7a7a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user?.email}</div>
+            </div>
           </div>
-          <button onClick={logout} style={styles.logoutBtn}>Logout</button>
+          <button className="btn-secondary" onClick={logout} style={{ width: "100%", justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Log out</button>
         </div>
-      </div>
+      </aside>
 
-      <div style={styles.main}>
-        <div style={styles.topBar}>
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} style={styles.menuBtn}>&#9776;</button>
-          <h3 style={styles.workspaceTitle}>Workspace</h3>
-          {selectedProject && <span style={styles.langBadge}>{selectedProject.language || "Python"}</span>}
-          <button onClick={() => setShowNewModal(true)} style={styles.topNewBtn}>+ New Project</button>
-        </div>
+      {/* Main */}
+      <main style={S.main}>
+        <header style={S.topbar}>
+          <button className="btn-icon" onClick={() => setSidebarOpen(!sidebarOpen)} title="Toggle sidebar">{sidebarOpen ? "←" : "→"}</button>
+          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0, flex: 1, color: "#e0e0e0" }}>
+            {selectedProject ? selectedProject.name : "Workspace"}
+          </h2>
+          {selectedProject && <span style={S.badge}>{lang}</span>}
+          <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 13, padding: "8px 14px" }}>+ New</button>
+        </header>
 
-        <div style={styles.content}>
+        <div style={S.content}>
           {selectedProject ? (
-            <div style={styles.workspace}>
-              {error && <div style={styles.error}>{error}</div>}
+            <div className="fade-in" style={{ maxWidth: 820, paddingBottom: 80 }}>
+              {error && <div style={S.error}>{error}</div>}
 
+              {/* SCHEMA */}
               {activeSection === "schema" && (
-                <>
-                  <div style={styles.inputSection}>
-                    <label style={styles.label}>Project Description</label>
-                    <textarea placeholder="e.g., A library management system..." value={description}
-                      onChange={(e) => setDescription(e.target.value)} style={styles.textarea} rows={3} />
+                <div>
+                  <div style={S.cardWrap}>
+                    <label style={S.lbl}>Project Description</label>
+                    <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Describe your project in a sentence..." style={S.ta} rows={3} />
                   </div>
-                  <div style={styles.inputSection}>
-                    <label style={styles.label}>Detailed Features</label>
-                    <textarea placeholder="e.g., Books need ISBN, title..." value={features}
-                      onChange={(e) => setFeatures(e.target.value)} style={styles.textarea} rows={4} />
+                  <div style={S.cardWrap}>
+                    <label style={S.lbl}>Detailed Features</label>
+                    <textarea value={features} onChange={e => setFeatures(e.target.value)} placeholder="List tables, columns, and relationships you need..." style={S.ta} rows={4} />
                   </div>
-                  {!parsedEntities && (
-                    <button onClick={handleExtract} disabled={loading}
-                      style={{ ...styles.extractBtn, opacity: loading ? 0.6 : 1, marginBottom: "16px" }}>
-                      {loading ? "Analyzing..." : "Extract Entities"}
+
+                  {!entities && (
+                    <button className="btn-primary" onClick={handleExtract} disabled={loading} style={{ opacity: loading ? 0.6 : 1 }}>
+                      {loading ? <><span className="spinner" /> Analyzing...</> : <> Extract Entities</>}
                     </button>
                   )}
-                  {loading && <p style={styles.loadingText}>Analyzing architecture...</p>}
 
-                  {parsedEntities && (
-                    <div style={styles.treeSection}>
-                      <div style={styles.treeContainer}>
-                        <h3 style={styles.treeTitle}>Database Schema</h3>
-                        <div style={styles.treeRoot}>
-                          <div onClick={() => toggleTable("__root__")} style={styles.treeNodeRow}>
-                            <span style={styles.treeToggle}>{expandedTables["__root__"] === false ? "▶" : "▼"}</span>
-                            <span style={styles.treeFolderIcon}>&#128193;</span>
-                            <span style={styles.treeLabel}>Tables</span>
-                          </div>
-                          {expandedTables["__root__"] !== false && parsedEntities.tables.map((table) => (
-                            <div key={table.name} style={styles.treeTableGroup}>
-                              <div style={styles.treeLine}>
-                                <div onClick={() => toggleTable(table.name)} style={styles.treeNodeRow}>
-                                  <span style={styles.treeToggle}>{expandedTables[table.name] ? "▼" : "▶"}</span>
-                                  <span style={styles.treeTableIcon}>&#9638;</span>
-                                  <span style={styles.treeTableBadge}>Table: {table.name}</span>
-                                </div>
-                              </div>
-                              {expandedTables[table.name] && table.columns.map((col) => (
-                                <div key={col.name} style={styles.treeColGroup}>
-                                  <div style={styles.treeColLine}>
-                                    <div onClick={() => toggleTable(`${table.name}.${col.name}`)} style={styles.treeNodeRow}>
-                                      <span style={styles.treeToggle}>{expandedTables[`${table.name}.${col.name}`] ? "▼" : "▶"}</span>
-                                      <span style={styles.treeColIcon}>&#9638;</span>
-                                      <span style={styles.treeColBadge}>Col: {col.name}</span>
-                                    </div>
-                                  </div>
-                                  {expandedTables[`${table.name}.${col.name}`] && (
-                                    <div style={styles.treePropsGroup}>
-                                      <div style={styles.treePropRow}><span style={styles.treePropIcon}>&#9776;</span><span style={styles.treePropText}>Type: {col.type}</span></div>
-                                      {col.pk && <div style={styles.treePropRow}><span style={styles.treePropIcon}>&#9776;</span><span style={styles.treePropText}>Primary Key</span></div>}
-                                      {col.pk && <div style={styles.treePropRow}><span style={styles.treePropIcon}>&#9776;</span><span style={styles.treePropText}>Auto Increment</span></div>}
-                                      {col.fk && <div style={styles.treePropRow}><span style={styles.treePropIcon}>&#9776;</span><span style={styles.treePropText}>Foreign Key (references {col.fk})</span></div>}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          ))}
+                  {entities && (
+                    <>
+                      <div className="card" style={{ padding: "20px 24px", marginTop: 24 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "#e0e0e0" }}>Database Schema</h3>
+                          <span style={{ fontSize: 12, color: "#7a7a7a" }}>{entities.tables?.length || 0} tables</span>
                         </div>
+                        <TreeView entities={entities} expanded={expandedTables} toggle={toggle} />
                       </div>
 
                       {selectedProject.status === "finalized" && (
-                        <div style={styles.finalizedSection}>
-                          <div style={styles.finalizedBanner}>Schema finalized</div>
-                          <div style={styles.downloadButtons}>
-                            <button onClick={() => handleDownload("sql")} style={styles.downloadSqlBtn}>Download SQL</button>
-                            <button onClick={() => handleDownload("json")} style={styles.downloadJsonBtn}>Download JSON</button>
-                          </div>
+                        <div style={{ marginTop: 16, padding: 16, background: "rgba(34,197,94,0.1)", borderRadius: 10, border: "1px solid rgba(34,197,94,0.35)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                          <span style={{ color: "#22c55e", fontWeight: 600, flex: 1 }}>Schema finalized</span>
+                          <button className="btn-primary" onClick={() => handleDownload("sql")} style={{ fontSize: 13, padding: "8px 16px" }}>Download SQL</button>
+                          <button className="btn-purple" onClick={() => handleDownload("json")} style={{ fontSize: 13, padding: "8px 16px" }}>Download JSON</button>
                         </div>
                       )}
 
-                      <div style={styles.refineSection}>
-                        <label style={styles.label}>Refine Architecture</label>
-                        <textarea placeholder="e.g., Add a publisher table..." value={refineText}
-                          onChange={(e) => setRefineText(e.target.value)} style={styles.textarea} rows={3} />
-                        <div style={styles.actionButtons}>
-                          <button onClick={handleRefine} disabled={loading || !refineText.trim()} style={styles.updateBtn}>Update Schema</button>
-                          <button onClick={handleExtract} disabled={loading} style={styles.reExtractBtn}>Re-Extract</button>
+                      <div className="card" style={{ padding: 20, marginTop: 16 }}>
+                        <label style={S.lbl}>Refine Architecture</label>
+                        <textarea value={refineText} onChange={e => setRefineText(e.target.value)} placeholder="e.g., Add a payments table linked to orders..." style={S.ta} rows={3} />
+                        <div style={{ display: "flex", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                          <button className="btn-primary" onClick={handleRefine} disabled={loading || !refineText.trim()} style={{ opacity: (!refineText.trim() || loading) ? 0.5 : 1 }}>
+                            {loading ? <><span className="spinner" /> Updating...</> : "Update Schema"}
+                          </button>
+                          <button className="btn-purple" onClick={handleExtract} disabled={loading}>Re-Extract</button>
                           {selectedProject.status !== "finalized"
-                            ? <button onClick={handleFinalize} style={styles.finalizeBtn}>Finalize & Lock</button>
-                            : <button onClick={handleUnlock} style={styles.editSchemaBtn}>Unlock Draft</button>}
+                            ? <button className="btn-danger" onClick={handleFinalize}>Finalize & Lock</button>
+                            : <button className="btn-warning" onClick={handleUnlock}>Unlock Draft</button>}
                         </div>
                       </div>
-                    </div>
+                    </>
                   )}
-                </>
+                </div>
               )}
 
+              {/* VALIDATION */}
               {activeSection === "validation" && (
                 <div>
-                  <div style={styles.sectionHeader}>
-                    <h3 style={styles.sectionTitle}>Validation Rules</h3>
-                    <span style={styles.langBadgeSmall}>Generating {selectedProject.language || "Python"} code</span>
+                  <div style={{ marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>Entity Classes & Validation</h3>
+                    <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>
+                      {validationCode
+                        ? "Entity classes auto-generated from schema. Add validation rules or edit existing code below."
+                        : "Extract a schema first to auto-generate entity classes."}
+                    </p>
                   </div>
-                  <div style={styles.inputSection}>
-                    <label style={styles.label}>Describe your validation rules in plain English</label>
-                    <textarea placeholder="e.g., Student age must be less than 24. Email must be valid..."
-                      value={validationRules} onChange={(e) => setValidationRules(e.target.value)} style={styles.textarea} rows={5} />
-                  </div>
-                  <button onClick={handleGenerateValidation} disabled={validationLoading || !validationRules.trim()}
-                    style={{ ...styles.extractBtn, opacity: validationLoading ? 0.6 : 1 }}>
-                    {validationLoading ? "Generating..." : "Generate Validation Code"}
-                  </button>
-                  {validationCode && (
-                    <div style={styles.codeSection}>
-                      <div style={styles.codeHeader}>
-                        <span style={styles.codeTitle}>Generated Validation Code</span>
-                        <button onClick={() => downloadCode(validationCode, `validation.${selectedProject.language === "Python" ? "py" : selectedProject.language === "Java" ? "java" : "js"}`)}
-                          style={styles.downloadCodeBtn}>Download</button>
-                      </div>
-                      <pre style={styles.codeBlock}>{validationCode}</pre>
+
+                  {validationCode && <MultiFileCode title="Project Files" code={validationCode} parseFiles={parseFiles} syntaxLang={syntaxLang} downloadCode={downloadCode} onDeleteFile={handleDeleteFile} onClearAll={handleClearValidation} />}
+
+                  {entities ? (
+                    <div className="card" style={{ padding: 20, marginTop: 20 }}>
+                      <label style={S.lbl}>Add validation rules or modify code</label>
+                      <textarea value={validationRules} onChange={e => setValidationRules(e.target.value)}
+                        placeholder="e.g., Add email validation in student.py. Age must be between 5 and 24. Add a phone number format check in parent.py..."
+                        style={S.ta} rows={4} />
+                      <button className="btn-primary" onClick={handleGenValidation} disabled={validationLoading || !validationRules.trim()}
+                        style={{ marginTop: 12, opacity: (validationLoading || !validationRules.trim()) ? 0.5 : 1 }}>
+                        {validationLoading ? <><span className="spinner" /> Updating code...</> : "Update Code"}
+                      </button>
                     </div>
+                  ) : (
+                    <div style={{ ...S.warn, marginTop: 16 }}>Go to Database Schema and extract entities first. Entity classes will be auto-generated.</div>
                   )}
                 </div>
               )}
 
+              {/* UI SCREENS */}
               {activeSection === "ui" && (
-                <div>
-                  <div style={styles.sectionHeader}>
-                    <h3 style={styles.sectionTitle}>User Interface</h3>
-                    <span style={styles.langBadgeSmall}>Generating {selectedProject.language || "HTML"} UI</span>
-                  </div>
-                  <div style={styles.inputSection}>
-                    <label style={styles.label}>Describe the UI you want</label>
-                    <textarea placeholder="e.g., Display order items in a table with edit and delete buttons..."
-                      value={uiDescription} onChange={(e) => setUIDescription(e.target.value)} style={styles.textarea} rows={5} />
-                  </div>
-                  <button onClick={handleGenerateUI} disabled={uiLoading || !uiDescription.trim()}
-                    style={{ ...styles.extractBtn, opacity: uiLoading ? 0.6 : 1 }}>
-                    {uiLoading ? "Generating..." : "Generate UI Code"}
-                  </button>
-                  {uiCode && (
-                    <div style={styles.codeSection}>
-                      <div style={styles.codeHeader}>
-                        <span style={styles.codeTitle}>Generated UI</span>
-                        <div style={{ display: "flex", gap: "8px" }}>
-                          <button onClick={() => setShowUiCode(!showUiCode)}
-                            style={{ ...styles.downloadCodeBtn, color: showUiCode ? "#f59e0b" : "#667eea" }}>
-                            {showUiCode ? "Show Preview" : "Show Code"}
-                          </button>
-                          <button onClick={() => downloadCode(uiCode, "ui.html")}
-                            style={styles.downloadCodeBtn}>Download</button>
-                        </div>
+                <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+
+                  {/* LEFT: editor */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ marginBottom: 16, display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                      <div>
+                        <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>
+                          {activeScreenId ? screenName || "Untitled Screen" : "New Screen"}
+                        </h3>
+                        <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>Describe a screen — XML and HTML are generated automatically and saved to this project.</p>
                       </div>
-                      {showUiCode ? (
-                        <pre style={styles.codeBlock}>{uiCode}</pre>
-                      ) : (
-                        <iframe
-                          srcDoc={uiCode}
-                          style={styles.previewFrame}
-                          title="UI Preview"
-                          sandbox="allow-scripts"
-                        />
-                      )}
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 8, padding: "4px 10px" }}>
+                          <label style={{ fontSize: 12, color: "#818cf8", fontWeight: 600 }}>Frontend:</label>
+                          <select value={frontendLang} onChange={e => handleFrontendLangChange(e.target.value)}
+                            style={{ padding: "2px 6px", borderRadius: 4, border: "none", fontSize: 13, background: "transparent", color: "#e0e0e0", fontWeight: 600, cursor: "pointer" }}>
+                            {FRONTEND_LANGUAGES.map(l => <option key={l} style={{ background: "#2d2d30" }}>{l}</option>)}
+                          </select>
+                        </div>
+                        <button className="btn-secondary" onClick={handleNewScreen} style={{ fontSize: 12, padding: "5px 12px" }}>+ New Screen</button>
+                      </div>
+                    </div>
+
+                    {entities ? <SchemaRef tables={entities.tables} /> : <div style={{ ...S.warn, marginBottom: 16 }}>Extract a database schema first for best results.</div>}
+
+                    {/* Editor card */}
+                    <div className="card" style={{ padding: 20, marginBottom: 16 }}>
+                      <div style={{ marginBottom: 10 }}>
+                        <label style={S.lbl}>Screen Name</label>
+                        <input value={screenName} onChange={e => setScreenName(e.target.value)}
+                          placeholder="e.g. Department Master, Employee Form, Order List"
+                          style={{ ...S.inp, marginBottom: 0 }} />
+                      </div>
+                      <div style={{ marginBottom: 12 }}>
+                        <label style={S.lbl}>Screen Description</label>
+                        <textarea value={screenDesc} onChange={e => setScreenDesc(e.target.value)}
+                          placeholder="Describe what this screen does, what fields it has, what the list/grid should show, and what action buttons are needed."
+                          style={S.ta} rows={4} />
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <button className="btn-primary" onClick={handleGenerateScreen}
+                          disabled={screenXmlLoading || screenHtmlLoading || !screenDesc.trim()}
+                          style={{ opacity: (screenXmlLoading || screenHtmlLoading || !screenDesc.trim()) ? 0.5 : 1 }}>
+                          {screenXmlLoading ? <><span className="spinner" /> Building XML...</>
+                            : screenHtmlLoading ? <><span className="spinner" /> Rendering HTML...</>
+                            : activeScreenId ? "Regenerate Screen" : "Generate Screen"}
+                        </button>
+                        {screenXml && activeScreenId && (
+                          <button className="btn-secondary" onClick={handleRegenHtml} disabled={screenHtmlLoading}
+                            style={{ fontSize: 12, padding: "6px 14px" }}>
+                            {screenHtmlLoading ? <><span className="spinner" /> Regenerating...</> : "Regenerate HTML"}
+                          </button>
+                        )}
+                        {screenXml && activeScreenId && (
+                          <button className="btn-purple" onClick={handleGenScreenApi} disabled={screenApiLoading}
+                            style={{ fontSize: 12, padding: "6px 14px" }}>
+                            {screenApiLoading ? <><span className="spinner" /> Generating...</> : "Generate REST API"}
+                          </button>
+                        )}
+                        {(screenXmlLoading || screenHtmlLoading) && (
+                          <span style={{ fontSize: 12, color: "#7a7a7a" }}>
+                            {screenXmlLoading ? "Step 1/2: generating XML..." : "Step 2/2: converting to HTML..."}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Output tabs */}
+                    {(screenXml || screenHtml || screenApi) && (
+                      <div className="card" style={{ overflow: "hidden" }}>
+                        <div style={{ display: "flex", borderBottom: "1px solid #333", background: "#1e1e1e" }}>
+                          {[
+                            { key: "xml", label: "XML Definition", ready: !!screenXml },
+                            { key: "html", label: "HTML Preview", ready: !!screenHtml },
+                            { key: "api", label: "REST API", ready: !!screenApi },
+                          ].map(t => (
+                            <button key={t.key} onClick={() => setScreenTab(t.key)} style={{
+                              padding: "10px 20px", fontSize: 13, fontWeight: screenTab === t.key ? 600 : 400, cursor: "pointer",
+                              border: "none", borderBottom: screenTab === t.key ? "2px solid #6366f1" : "2px solid transparent",
+                              background: screenTab === t.key ? "#252526" : "transparent", color: screenTab === t.key ? "#818cf8" : "#8a8a8a",
+                            }}>
+                              {t.label}{t.ready && <span style={{ color: "#22c55e", marginLeft: 4, fontSize: 10 }}>●</span>}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* HTML tab */}
+                        {screenTab === "html" && (
+                          screenHtml ? (
+                            <>
+                              <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderBottom: "1px solid #333", background: "#1e1e1e" }}>
+                                <button className="btn-secondary" onClick={() => setShowScreenCode(!showScreenCode)} style={{ fontSize: 12, padding: "6px 14px" }}>
+                                  {showScreenCode ? "Show Preview" : "Show Code"}
+                                </button>
+                                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                                  {!showScreenCode && (
+                                    <button className="btn-secondary" onClick={() => {
+                                      const closeBtn = `<button onclick="window.close()" style="position:fixed;top:14px;left:14px;z-index:99999;background:#1e1e1e;color:#e0e0e0;border:1px solid #444;border-radius:6px;padding:6px 14px;font-size:13px;font-family:inherit;cursor:pointer;display:flex;align-items:center;gap:6px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">&#8592; Close Preview</button>`;
+                                      const injected = screenHtml.replace("</body>", closeBtn + "</body>");
+                                      const w = window.open("", "_blank");
+                                      w.document.write(injected);
+                                      w.document.close();
+                                    }} style={{ fontSize: 12, padding: "6px 14px" }}>Full Screen</button>
+                                  )}
+                                  <button className="btn-secondary" onClick={() => downloadCode(screenHtml, `${screenName || "screen"}.html`)}
+                                    style={{ fontSize: 12, padding: "6px 14px" }}>Download HTML</button>
+                                </div>
+                              </div>
+                              {showScreenCode
+                                ? <SyntaxHighlighter language="html" style={oneDark} customStyle={{ margin: 0, borderRadius: 0, fontSize: 13, lineHeight: 1.6, maxHeight: 600, padding: "16px" }} showLineNumbers wrapLongLines>{screenHtml}</SyntaxHighlighter>
+                                : <iframe srcDoc={screenHtml} style={{ width: "100%", minHeight: 600, border: "none" }} title="Preview" sandbox="allow-scripts" />}
+                            </>
+                          ) : (
+                            <div style={{ padding: 40, textAlign: "center", color: "#7a7a7a" }}>
+                              {screenXml
+                                ? <button className="btn-primary" onClick={handleRegenHtml} disabled={screenHtmlLoading}>{screenHtmlLoading ? <><span className="spinner" /> Generating...</> : "Generate HTML from XML"}</button>
+                                : "Describe a screen and click Generate Screen"}
+                            </div>
+                          )
+                        )}
+
+                        {/* XML tab */}
+                        {screenTab === "xml" && (
+                          screenXml ? (
+                            <>
+                              <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderBottom: "1px solid #333", background: "#1e1e1e" }}>
+                                <button className="btn-secondary" onClick={() => downloadCode(screenXml, `${screenName || "screen"}.xml`)} style={{ fontSize: 12, padding: "6px 14px", marginLeft: "auto" }}>Download XML</button>
+                              </div>
+                              <SyntaxHighlighter language="xml" style={oneDark} customStyle={{ margin: 0, borderRadius: 0, fontSize: 13, lineHeight: 1.6, maxHeight: 500, padding: "16px" }} showLineNumbers wrapLongLines>{screenXml}</SyntaxHighlighter>
+                            </>
+                          ) : <div style={{ padding: 40, textAlign: "center", color: "#7a7a7a" }}>No XML yet — click Generate Screen.</div>
+                        )}
+
+                        {/* API tab */}
+                        {screenTab === "api" && (
+                          screenApi
+                            ? <MultiFileCode title={`API Code (${selectedProject.language} + ${frontendLang})`} code={screenApi} parseFiles={parseFiles} syntaxLang={syntaxLang} downloadCode={downloadCode} />
+                            : <div style={{ padding: 40, textAlign: "center", color: "#7a7a7a" }}>
+                                {screenXml ? <button className="btn-purple" onClick={handleGenScreenApi} disabled={screenApiLoading}>{screenApiLoading ? <><span className="spinner" /> Generating...</> : `Generate ${selectedProject.language} + ${frontendLang} API`}</button> : "Generate XML first"}
+                              </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* RIGHT: screen list */}
+                  <div style={{ width: 220, flexShrink: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#5a5a5a", letterSpacing: 0.8, marginBottom: 8, padding: "0 4px" }}>
+                      SCREENS ({screens.length})
+                    </div>
+                    {screens.length === 0 ? (
+                      <div style={{ fontSize: 12, color: "#5a5a5a", padding: "12px 8px", fontStyle: "italic" }}>No screens yet.</div>
+                    ) : screens.map(s => (
+                      <div key={s.id} onClick={() => handleSelectScreen(s)} style={{
+                        padding: "10px 12px", borderRadius: 8, cursor: "pointer", marginBottom: 4, position: "relative",
+                        background: activeScreenId === s.id ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.03)",
+                        border: activeScreenId === s.id ? "1px solid rgba(99,102,241,0.4)" : "1px solid #2d2d2d",
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: activeScreenId === s.id ? "#818cf8" : "#cfcfcf", paddingRight: 20, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
+                        <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
+                          {s.html && <span style={{ fontSize: 10, color: "#22c55e", background: "rgba(34,197,94,0.1)", padding: "1px 5px", borderRadius: 3 }}>HTML</span>}
+                          {s.xml && <span style={{ fontSize: 10, color: "#818cf8", background: "rgba(99,102,241,0.1)", padding: "1px 5px", borderRadius: 3 }}>XML</span>}
+                          {s.api && <span style={{ fontSize: 10, color: "#f59e0b", background: "rgba(245,158,11,0.1)", padding: "1px 5px", borderRadius: 3 }}>API</span>}
+                          {!s.xml && !s.html && <span style={{ fontSize: 10, color: "#6a6a6a" }}>Draft</span>}
+                        </div>
+                        <button onClick={e => { e.stopPropagation(); handleDeleteScreen(s.id); }}
+                          style={{ position: "absolute", top: 8, right: 8, background: "transparent", border: "none", color: "#5a5a5a", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}
+                          title="Delete screen">&times;</button>
+                      </div>
+                    ))}
+                  </div>
+
+                </div>
+              )}
+
+              {/* ===== ARCHITECT VIEW: DB SCHEMA (ER DIAGRAM) ===== */}
+              {activeSection === "arch-db" && (
+                <div>
+                  <div style={{ marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>ER Diagram</h3>
+                    <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>Entity-relationship diagram generated from your database schema.</p>
+                  </div>
+                  <div className="card" style={{ minHeight: 200 }}>
+                    <ERDiagram entities={entities} />
+                  </div>
+                </div>
+              )}
+
+              {/* ===== ARCHITECT VIEW: VALIDATION (placeholder) ===== */}
+              {activeSection === "arch-validation" && (
+                <div>
+                  <div style={{ marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>Validation Architecture</h3>
+                    <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>Coming soon.</p>
+                  </div>
+                  <div className="card" style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>
+                    Nothing here yet.
+                  </div>
+                </div>
+              )}
+
+              {/* ===== ARCHITECT VIEW: USER INTERFACE (screens list) ===== */}
+              {activeSection === "arch-ui" && (
+                <div>
+                  <div style={{ marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div>
+                      <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>Screens</h3>
+                      <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>{screens.length} screen{screens.length !== 1 ? "s" : ""} in this project.</p>
+                    </div>
+                    <button className="btn-primary" onClick={() => { handleNewScreen(); setActiveSection("ui"); }} style={{ fontSize: 13 }}>+ New Screen</button>
+                  </div>
+                  {screens.length === 0 ? (
+                    <div className="card" style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>
+                      No screens yet. Go to <strong style={{ color: "#cfcfcf" }}>User Interface</strong> in Workspace to create one.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      {screens.map(s => (
+                        <div key={s.id} className="card" style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div>
+                            <div style={{ fontSize: 15, fontWeight: 600, color: "#e0e0e0", marginBottom: 6 }}>{s.name}</div>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: s.xml ? "rgba(99,102,241,0.15)" : "#2a2a2a", color: s.xml ? "#818cf8" : "#5a5a5a", fontWeight: 600 }}>{s.xml ? "XML ✓" : "XML —"}</span>
+                              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: s.html ? "rgba(34,197,94,0.12)" : "#2a2a2a", color: s.html ? "#22c55e" : "#5a5a5a", fontWeight: 600 }}>{s.html ? "HTML ✓" : "HTML —"}</span>
+                              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4, background: s.api ? "rgba(167,139,250,0.15)" : "#2a2a2a", color: s.api ? "#a78bfa" : "#5a5a5a", fontWeight: 600 }}>{s.api ? "API ✓" : "API —"}</span>
+                            </div>
+                          </div>
+                          <button className="btn-secondary" onClick={() => { handleSelectScreen(s); setActiveSection("ui"); }} style={{ fontSize: 13 }}>Edit</button>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Save to MongoDB - fixed bottom right */}
-              <div style={styles.saveToMongoContainer}>
-                {saveMsg && <span style={styles.saveMsgText}>{saveMsg}</span>}
-                <button onClick={handleSaveToMongo} style={styles.saveToMongoBtn}>
-                  Save to MongoDB
+              {/* Save FAB */}
+              <div style={{ position: "fixed", bottom: 24, right: 28, zIndex: 100, display: "flex", alignItems: "center", gap: 10 }}>
+                {saveMsg && <div className="toast">{saveMsg}</div>}
+                <button className="btn-success" onClick={handleSaveToMongo} style={{ padding: "12px 24px", borderRadius: 10, fontSize: 14, boxShadow: "0 4px 16px rgba(34,197,94,0.3)" }}>
+                  Save to Cloud
                 </button>
               </div>
             </div>
           ) : (
-            <div style={styles.emptyState}>
-              <h2 style={styles.emptyTitle}>Welcome, {user?.full_name || user?.email}</h2>
-              <p style={styles.emptySubtitle}>Create a new project to start designing your database architecture</p>
-              <button onClick={() => setShowNewModal(true)} style={styles.newProjectBtn}>+ New Project</button>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center" }}>
+              <div style={{ width: 64, height: 64, borderRadius: 16, background: "rgba(99,102,241,0.15)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20 }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              </div>
+              <h2 style={{ fontSize: 24, fontWeight: 700, color: "#e0e0e0", margin: "0 0 8px" }}>Welcome, {user?.full_name || "there"}</h2>
+              <p style={{ color: "#7a7a7a", fontSize: 14, margin: "0 0 28px", maxWidth: 380, lineHeight: 1.6 }}>Design database schemas, generate validation logic, and build user interfaces — all from plain English descriptions.</p>
+              <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 14, padding: "12px 28px" }}>Create New Project</button>
             </div>
           )}
         </div>
-      </div>
+      </main>
     </div>
   );
 }
 
-function ProjectItem({ project, selected, onSelect, onDelete, tableCount, activeSection, onSectionChange }) {
+function SectionHeader({ text, count }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "16px 0 8px" }}>
+      <span style={{ fontSize: 11, fontWeight: 600, color: "#6a6a6a", letterSpacing: 1 }}>{text}</span>
+      {count > 0 && <span style={{ fontSize: 10, color: "#7a7a7a", background: "#2a2a2a", padding: "1px 6px", borderRadius: 8 }}>{count}</span>}
+    </div>
+  );
+}
+
+function SideItem({ p, sel, onSel, onDel, tc, sec, setSec, sectionGroups }) {
   return (
     <div>
-      <div onClick={() => onSelect(project)} style={{ ...styles.projectItem, background: selected ? "#2a2a3e" : "transparent" }}>
-        <div style={styles.projectItemContent}>
-          <span style={styles.projectName}>{project.name?.substring(0, 22)}{project.name?.length > 22 ? "..." : ""}</span>
-          <div style={styles.projectMeta}>
-            <span style={styles.langTag}>{project.language || "Python"}</span>
-            {tableCount > 0 && <span style={styles.tableCountBadge}>{tableCount} tables</span>}
+      <div className="sidebar-item" onClick={() => onSel(p)} style={{ display: "flex", alignItems: "center", padding: "8px 10px", borderRadius: 8, cursor: "pointer", marginBottom: 2, background: sel ? "rgba(99,102,241,0.15)" : "transparent", border: sel ? "1px solid rgba(99,102,241,0.4)" : "1px solid transparent" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: sel ? 600 : 500, color: sel ? "#818cf8" : "#cfcfcf", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+            <span style={{ fontSize: 10, color: "#818cf8", background: "rgba(99,102,241,0.15)", padding: "1px 5px", borderRadius: 3, fontWeight: 500 }}>{p.language || "Python"}</span>
+            {tc > 0 && <span style={{ fontSize: 10, color: "#7a7a7a" }}>{tc} tables</span>}
           </div>
         </div>
-        <button onClick={(e) => onDelete(project.id, e)} style={styles.deleteBtn} title="Delete">&#128465;</button>
+        <button className="btn-icon delete-btn" onClick={e => onDel(p.id, e)} style={{ width: 24, height: 24, fontSize: 14 }} title="Delete">&times;</button>
       </div>
-      {selected && (
-        <div style={styles.subNav}>
-          {[{ key: "schema", label: "Database Schema" }, { key: "validation", label: "Validation" }, { key: "ui", label: "User Interface" }].map((s) => (
-            <div key={s.key} onClick={() => onSectionChange(s.key)}
-              style={{ ...styles.subNavItem, color: activeSection === s.key ? "#667eea" : "#888", background: activeSection === s.key ? "#667eea15" : "transparent" }}>
-              {s.label}
+      {sel && (
+        <div style={{ paddingLeft: 12, marginBottom: 4 }}>
+          {sectionGroups.map((g, gi) => (
+            <div key={g.heading} style={{ marginTop: gi > 0 ? 8 : 0 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#5a5a5a", letterSpacing: 0.6, padding: "4px 10px 2px" }}>{g.heading}</div>
+              {g.items.map(s => (
+                <div key={s.key} className="sub-nav-item" onClick={() => setSec(s.key)} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, padding: "5px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 1, color: sec === s.key ? "#818cf8" : "#8a8a8a", background: sec === s.key ? "rgba(99,102,241,0.15)" : "transparent", fontWeight: sec === s.key ? 600 : 400 }}>
+                  {s.label}
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -472,95 +797,208 @@ function ProjectItem({ project, selected, onSelect, onDelete, tableCount, active
   );
 }
 
-const styles = {
-  container: { display: "flex", minHeight: "100vh", background: "#0f0c29", color: "#fff", fontFamily: "'Segoe UI', system-ui, sans-serif" },
-  sidebar: { background: "#1a1a2e", borderRight: "1px solid #222", display: "flex", flexDirection: "column", transition: "width 0.2s, padding 0.2s", flexShrink: 0 },
-  sidebarHeader: { marginBottom: "16px" },
-  logo: { fontSize: "18px", fontWeight: 700, margin: 0, color: "#fff" },
-  newProjectBtn: { padding: "10px 16px", borderRadius: "8px", border: "none", background: "linear-gradient(135deg, #667eea, #764ba2)", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: "pointer", width: "100%", marginBottom: "20px" },
-  projectList: { flex: 1, overflowY: "auto" },
-  sectionLabel: { fontSize: "11px", fontWeight: 600, color: "#666", letterSpacing: "1px", margin: "0 0 8px" },
-  emptyText: { color: "#555", fontSize: "13px" },
-  projectItem: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: "6px", cursor: "pointer", marginBottom: "2px" },
-  projectItemContent: { display: "flex", flexDirection: "column", gap: "2px", overflow: "hidden", flex: 1 },
-  projectName: { fontSize: "13px", whiteSpace: "nowrap" },
-  projectMeta: { display: "flex", gap: "6px", alignItems: "center" },
-  langTag: { fontSize: "10px", color: "#667eea", background: "#667eea22", padding: "1px 6px", borderRadius: "3px" },
-  tableCountBadge: { fontSize: "10px", color: "#888" },
-  deleteBtn: { background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: "13px", padding: "2px 4px", flexShrink: 0 },
-  subNav: { paddingLeft: "16px", marginBottom: "4px" },
-  subNavItem: { fontSize: "12px", padding: "5px 10px", borderRadius: "4px", cursor: "pointer", marginBottom: "1px" },
-  sidebarFooter: { borderTop: "1px solid #222", paddingTop: "12px" },
-  userSection: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" },
-  avatar: { width: "28px", height: "28px", borderRadius: "50%" },
-  userName: { fontSize: "13px", color: "#ccc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  logoutBtn: { padding: "6px 12px", borderRadius: "6px", border: "1px solid #333", background: "transparent", color: "#888", cursor: "pointer", fontSize: "12px", width: "100%" },
-  main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" },
-  topBar: { display: "flex", alignItems: "center", gap: "16px", padding: "12px 24px", borderBottom: "1px solid #222" },
-  menuBtn: { background: "none", border: "none", color: "#888", fontSize: "20px", cursor: "pointer", padding: "4px" },
-  workspaceTitle: { fontSize: "16px", fontWeight: 600, margin: 0, flex: 1 },
-  langBadge: { fontSize: "12px", color: "#667eea", background: "#667eea22", padding: "3px 10px", borderRadius: "4px", fontWeight: 600 },
-  topNewBtn: { padding: "8px 16px", borderRadius: "6px", border: "none", background: "#667eea", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" },
-  content: { flex: 1, padding: "24px 32px", overflowY: "auto", position: "relative" },
-  workspace: { maxWidth: "800px", paddingBottom: "80px" },
-  inputSection: { marginBottom: "20px" },
-  label: { display: "block", fontSize: "14px", fontWeight: 600, marginBottom: "6px", color: "#ccc" },
-  input: { width: "100%", padding: "12px 16px", borderRadius: "8px", border: "1px solid #333", background: "#1e1e2e", color: "#fff", fontSize: "14px", outline: "none", boxSizing: "border-box", marginBottom: "12px" },
-  select: { width: "100%", padding: "12px 16px", borderRadius: "8px", border: "1px solid #333", background: "#1e1e2e", color: "#fff", fontSize: "14px", outline: "none", boxSizing: "border-box", marginBottom: "12px" },
-  textarea: { width: "100%", padding: "12px 16px", borderRadius: "8px", border: "1px solid #333", background: "#1e1e2e", color: "#fff", fontSize: "14px", outline: "none", resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" },
-  error: { background: "#ff4d4f22", border: "1px solid #ff4d4f", color: "#ff4d4f", borderRadius: "8px", padding: "10px", fontSize: "13px", marginBottom: "16px" },
-  saveBtn: { padding: "10px 24px", borderRadius: "8px", border: "none", background: "#16a34a", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: "pointer" },
-  extractBtn: { padding: "10px 24px", borderRadius: "8px", border: "none", background: "#2563eb", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: "pointer" },
-  cancelBtn: { padding: "10px 24px", borderRadius: "8px", border: "1px solid #333", background: "transparent", color: "#888", fontSize: "14px", cursor: "pointer" },
-  loadingText: { color: "#888", fontSize: "14px", fontStyle: "italic" },
-  modalOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 },
-  modalCard: { background: "#1e1e2e", borderRadius: "12px", padding: "32px", width: "400px", maxWidth: "90vw", border: "1px solid #333" },
-  modalTitle: { fontSize: "20px", margin: "0 0 20px", color: "#fff" },
-  modalActions: { display: "flex", gap: "12px", marginTop: "8px" },
-  treeSection: { marginTop: "28px" },
-  treeContainer: { background: "#1e1e2e", borderRadius: "10px", padding: "24px 28px", border: "1px solid #333", color: "#ddd" },
-  treeTitle: { fontSize: "20px", fontWeight: 700, margin: "0 0 16px", color: "#fff" },
-  treeRoot: { paddingLeft: "8px" },
-  treeNodeRow: { display: "flex", alignItems: "center", gap: "6px", padding: "3px 0", cursor: "pointer", userSelect: "none" },
-  treeToggle: { fontSize: "10px", color: "#999", width: "14px", flexShrink: 0 },
-  treeFolderIcon: { fontSize: "14px" },
-  treeLabel: { fontSize: "14px", fontWeight: 600, color: "#ddd" },
-  treeTableGroup: { paddingLeft: "24px" },
-  treeLine: { borderLeft: "1px solid #444", paddingLeft: "12px", marginLeft: "6px" },
-  treeTableIcon: { fontSize: "10px", color: "#4a8", marginRight: "2px" },
-  treeTableBadge: { fontSize: "13px", fontWeight: 600, color: "#fff", background: "#4caf50", padding: "2px 10px", borderRadius: "4px" },
-  treeColGroup: { paddingLeft: "36px" },
-  treeColLine: { borderLeft: "1px solid #444", paddingLeft: "12px", marginLeft: "6px" },
-  treeColIcon: { fontSize: "10px", color: "#4a8", marginRight: "2px" },
-  treeColBadge: { fontSize: "13px", fontWeight: 600, color: "#fff", background: "#66bb6a", padding: "2px 10px", borderRadius: "4px" },
-  treePropsGroup: { paddingLeft: "60px" },
-  treePropRow: { display: "flex", alignItems: "center", gap: "8px", padding: "2px 0", borderLeft: "1px solid #444", paddingLeft: "12px", marginLeft: "6px" },
-  treePropIcon: { fontSize: "11px", color: "#666" },
-  treePropText: { fontSize: "13px", color: "#aaa" },
-  finalizedSection: { marginTop: "20px" },
-  finalizedBanner: { padding: "10px 16px", background: "#16a34a22", border: "1px solid #16a34a", borderRadius: "8px", color: "#16a34a", fontSize: "14px", fontWeight: 600, textAlign: "center", marginBottom: "12px" },
-  downloadButtons: { display: "flex", gap: "12px" },
-  downloadSqlBtn: { padding: "10px 20px", borderRadius: "8px", border: "none", background: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer", flex: 1 },
-  downloadJsonBtn: { padding: "10px 20px", borderRadius: "8px", border: "none", background: "#7c3aed", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer", flex: 1 },
-  refineSection: { marginTop: "24px", padding: "20px", background: "#1e1e2e", borderRadius: "8px", border: "1px solid #333" },
-  actionButtons: { display: "flex", gap: "12px", marginTop: "12px", flexWrap: "wrap" },
-  updateBtn: { padding: "10px 20px", borderRadius: "8px", border: "none", background: "#2563eb", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" },
-  reExtractBtn: { padding: "10px 20px", borderRadius: "8px", border: "none", background: "#7c3aed", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" },
-  finalizeBtn: { padding: "10px 20px", borderRadius: "8px", border: "none", background: "#dc2626", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: "pointer" },
-  editSchemaBtn: { padding: "10px 20px", borderRadius: "8px", border: "1px solid #f59e0b", background: "transparent", color: "#f59e0b", fontSize: "13px", fontWeight: 600, cursor: "pointer" },
-  sectionHeader: { display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" },
-  sectionTitle: { fontSize: "20px", fontWeight: 700, margin: 0 },
-  langBadgeSmall: { fontSize: "12px", color: "#888", background: "#333", padding: "3px 10px", borderRadius: "4px" },
-  codeSection: { marginTop: "20px" },
-  codeHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" },
-  codeTitle: { fontSize: "14px", fontWeight: 600, color: "#ccc" },
-  downloadCodeBtn: { padding: "6px 14px", borderRadius: "6px", border: "1px solid #333", background: "transparent", color: "#667eea", fontSize: "12px", fontWeight: 600, cursor: "pointer" },
-  codeBlock: { background: "#0d1117", border: "1px solid #333", borderRadius: "8px", padding: "16px", overflowX: "auto", fontFamily: "'Consolas', 'Fira Code', monospace", fontSize: "13px", color: "#e6edf3", lineHeight: "1.6", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "500px", overflowY: "auto" },
-  previewFrame: { width: "100%", minHeight: "400px", border: "1px solid #333", borderRadius: "8px", background: "#fff" },
-  emptyState: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center" },
-  emptyTitle: { fontSize: "28px", margin: "0 0 8px" },
-  emptySubtitle: { color: "#888", fontSize: "15px", margin: "0 0 24px" },
-  saveToMongoContainer: { position: "fixed", bottom: "24px", right: "32px", display: "flex", alignItems: "center", gap: "12px", zIndex: 100 },
-  saveToMongoBtn: { padding: "12px 28px", borderRadius: "10px", border: "none", background: "linear-gradient(135deg, #16a34a, #15803d)", color: "#fff", fontSize: "15px", fontWeight: 700, cursor: "pointer", boxShadow: "0 4px 20px rgba(22,163,74,0.4)" },
-  saveMsgText: { color: "#16a34a", fontSize: "14px", fontWeight: 600, background: "#16a34a22", padding: "8px 14px", borderRadius: "8px" },
+function entitiesToMermaid(entities) {
+  if (!entities?.tables?.length) return "";
+  const lines = ["erDiagram"];
+  for (const table of entities.tables) {
+    lines.push(`  ${table.name} {`);
+    for (const col of (table.columns || [])) {
+      const type = (col.type || "string").replace(/\s+/g, "_");
+      const name = col.name;
+      const tags = [col.pk ? "PK" : null, col.fk ? "FK" : null].filter(Boolean).join(",");
+      lines.push(`    ${type} ${name}${tags ? ` "${tags}"` : ""}`);
+    }
+    lines.push("  }");
+  }
+  const seen = new Set();
+  for (const table of entities.tables) {
+    for (const col of (table.columns || [])) {
+      if (col.fk) {
+        const refTable = col.fk.split(".")[0];
+        const key = `${refTable}||--o{${table.name}`;
+        if (!seen.has(key) && refTable !== table.name) {
+          seen.add(key);
+          lines.push(`  ${refTable} ||--o{ ${table.name} : " "`);
+        }
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function ERDiagram({ entities }) {
+  const containerRef = useRef(null);
+  const [svg, setSvg] = useState("");
+  const [error, setError] = useState(null);
+
+  const mermaidDef = useMemo(() => entitiesToMermaid(entities), [entities]);
+
+  useEffect(() => {
+    if (!mermaidDef) { setSvg(""); return; }
+    let cancelled = false;
+    import("mermaid").then(({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        er: { diagramPadding: 40, layoutDirection: "TB", minEntityWidth: 140, minEntityHeight: 80, entityPadding: 18, useMaxWidth: true },
+      });
+      const id = `er-${Date.now()}`;
+      mermaid.render(id, mermaidDef).then(({ svg: rendered }) => {
+        if (!cancelled) { setSvg(rendered); setError(null); }
+      }).catch((e) => {
+        if (!cancelled) setError(e.message);
+      });
+    });
+    return () => { cancelled = true; };
+  }, [mermaidDef]);
+
+  if (!mermaidDef) {
+    return <div style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>No schema extracted yet. Go to <strong>Database Schema</strong> in Workspace to extract entities.</div>;
+  }
+  if (error) {
+    return <div style={{ padding: 24, color: "#f87171", fontSize: 13 }}>Diagram error: {error}</div>;
+  }
+  if (!svg) {
+    return <div style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>Rendering diagram…</div>;
+  }
+
+  return (
+    <div ref={containerRef} style={{ padding: 24, overflow: "auto", background: "#13111c", borderRadius: 8, minHeight: 300 }}
+      dangerouslySetInnerHTML={{ __html: svg }} />
+  );
+}
+
+function SchemaRef({ tables }) {
+  return (
+    <div style={{ marginBottom: 16, background: "#1e1e1e", borderRadius: 10, border: "1px solid #333", overflow: "hidden" }}>
+      <div style={{ padding: "6px 14px", background: "#252526", fontSize: 11, fontWeight: 600, color: "#8a8a8a", letterSpacing: 0.5 }}>SCHEMA ENTITIES</div>
+      <div style={{ padding: "8px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
+        {tables.map(t => (
+          <div key={t.name} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#22c55e", minWidth: 90 }}>{t.name}</span>
+            <span style={{ fontSize: 11, color: "#7a7a7a" }}>{t.columns.map(c => c.name).join(", ")}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TreeView({ entities, expanded, toggle }) {
+  return (
+    <div style={{ paddingLeft: 4 }}>
+      <div className="tree-node" onClick={() => toggle("__root__")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", cursor: "pointer", userSelect: "none" }}>
+        <span style={{ fontSize: 10, color: "#7a7a7a", width: 14 }}>{expanded["__root__"] === false ? "▶" : "▼"}</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="#7a7a7a" stroke="none"><path d="M10 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V8a2 2 0 00-2-2h-8l-2-2z"/></svg>
+        <span style={{ fontSize: 14, fontWeight: 600, color: "#cfcfcf" }}>Tables</span>
+      </div>
+      {expanded["__root__"] !== false && entities.tables?.map(t => (
+        <div key={t.name} style={{ paddingLeft: 24 }}>
+          <div style={{ borderLeft: "2px solid #333", paddingLeft: 12, marginLeft: 6 }}>
+            <div className="tree-node" onClick={() => toggle(t.name)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", cursor: "pointer" }}>
+              <span style={{ fontSize: 10, color: "#7a7a7a", width: 14 }}>{expanded[t.name] ? "▼" : "▶"}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#fff", background: "#22c55e", padding: "2px 8px", borderRadius: 4 }}>Table: {t.name}</span>
+            </div>
+          </div>
+          {expanded[t.name] && t.columns?.map(c => (
+            <div key={c.name} style={{ paddingLeft: 48 }}>
+              <div style={{ borderLeft: "2px solid #333", paddingLeft: 12, marginLeft: 6 }}>
+                <div className="tree-node" onClick={() => toggle(`${t.name}.${c.name}`)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 4px", cursor: "pointer" }}>
+                  <span style={{ fontSize: 10, color: "#7a7a7a", width: 14 }}>{expanded[`${t.name}.${c.name}`] ? "▼" : "▶"}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#fff", background: "#16a34a", padding: "2px 8px", borderRadius: 4 }}>Col: {c.name}</span>
+                </div>
+              </div>
+              {expanded[`${t.name}.${c.name}`] && (
+                <div style={{ paddingLeft: 72 }}>
+                  {[
+                    `Type: ${c.type}`,
+                    ...(c.pk ? ["Primary Key", "Auto Increment"] : []),
+                    ...(c.fk ? [`Foreign Key (ref ${c.fk})`, "Required"] : []),
+                  ].map((prop, i) => (
+                    <div key={i} style={{ borderLeft: "2px solid #333", paddingLeft: 12, marginLeft: 6, padding: "2px 0 2px 12px", display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 10, color: "#5a5a5a" }}>{"☰"}</span>
+                      <span style={{ fontSize: 12, color: "#8a8a8a" }}>{prop}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const MultiFileCode = memo(function MultiFileCode({ title, code, parseFiles, syntaxLang, downloadCode, onDeleteFile, onClearAll }) {
+  const [activeTab, setActiveTab] = useState(0);
+  const files = parseFiles(code);
+  const safeTab = Math.min(activeTab, files.length - 1);
+
+  return (
+    <div className="card" style={{ marginTop: 20, overflow: "hidden" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", borderBottom: "1px solid #333" }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: "#cfcfcf" }}>{title} ({files.length} files)</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn-secondary" onClick={() => downloadCode(code, "code.zip")} style={{ fontSize: 12, padding: "5px 12px" }}>Download All</button>
+          {onClearAll && <button className="btn-danger" onClick={onClearAll} style={{ fontSize: 12, padding: "5px 12px" }}>Clear All</button>}
+        </div>
+      </div>
+      {files.length > 1 && (
+        <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #333", background: "#1e1e1e", overflowX: "auto" }}>
+          {files.map((f, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", borderBottom: (safeTab === i) ? "2px solid #6366f1" : "2px solid transparent", background: (safeTab === i) ? "#252526" : "transparent" }}>
+              <button onClick={() => setActiveTab(i)} style={{
+                padding: "8px 12px", fontSize: 12, fontWeight: (safeTab === i) ? 600 : 400, cursor: "pointer", border: "none",
+                background: "transparent", color: (safeTab === i) ? "#818cf8" : "#8a8a8a", whiteSpace: "nowrap",
+              }}>{f.name}</button>
+              {onDeleteFile && (
+                <button className="delete-btn" onClick={() => { onDeleteFile(f.name); if (safeTab >= files.length - 1) setActiveTab(Math.max(0, safeTab - 1)); }}
+                  style={{ border: "none", background: "transparent", color: "#5a5a5a", cursor: "pointer", fontSize: 14, padding: "0 6px 0 0", lineHeight: 1 }}
+                  title={`Delete ${f.name}`}>&times;</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {files[safeTab] && (
+        <div style={{ position: "relative" }}>
+          <div style={{ position: "absolute", top: 8, right: 12, display: "flex", gap: 6, zIndex: 2 }}>
+            <button className="btn-secondary" onClick={() => downloadCode(files[safeTab].code, files[safeTab].name)}
+              style={{ fontSize: 11, padding: "3px 10px", opacity: 0.8 }}>Download</button>
+            {onDeleteFile && <button className="btn-danger" onClick={() => { onDeleteFile(files[safeTab].name); setActiveTab(Math.max(0, safeTab - 1)); }}
+              style={{ fontSize: 11, padding: "3px 10px", opacity: 0.8 }}>Delete</button>}
+          </div>
+          <SyntaxHighlighter language={syntaxLang(files[activeTab].name)} style={oneDark}
+            customStyle={{ margin: 0, borderRadius: 0, fontSize: 13, lineHeight: 1.6, maxHeight: 500, padding: "16px 16px 16px 12px" }}
+            showLineNumbers wrapLongLines>
+            {files[activeTab].code}
+          </SyntaxHighlighter>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const S = {
+  wrap: { display: "flex", minHeight: "100vh", background: "#1e1e1e", color: "#e0e0e0", fontFamily: "'Inter', -apple-system, system-ui, sans-serif" },
+  side: { background: "#181818", borderRight: "1px solid #2d2d2d", display: "flex", flexDirection: "column", transition: "width 0.2s ease, padding 0.2s ease", flexShrink: 0 },
+  logo: { fontSize: 16, fontWeight: 700, margin: 0, color: "#e0e0e0", letterSpacing: 0.2 },
+  main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "#1e1e1e" },
+  topbar: { display: "flex", alignItems: "center", gap: 12, padding: "10px 24px", borderBottom: "1px solid #2d2d2d", background: "#1e1e1e" },
+  badge: { fontSize: 11, color: "#818cf8", background: "rgba(99,102,241,0.15)", padding: "3px 10px", borderRadius: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 },
+  content: { flex: 1, padding: "28px 36px", overflowY: "auto", background: "#1e1e1e" },
+  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 },
+  modal: { padding: 32, width: 440, maxWidth: "90vw" },
+  modalH: { fontSize: 20, fontWeight: 700, margin: "0 0 4px", color: "#e0e0e0" },
+  modalSub: { fontSize: 13, color: "#7a7a7a", margin: "0 0 20px" },
+  lbl: { display: "block", fontSize: 13, fontWeight: 600, marginBottom: 6, color: "#b4b4b4" },
+  inp: { width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid #3c3c3c", background: "#2d2d30", color: "#e0e0e0", fontSize: 14, outline: "none", boxSizing: "border-box", marginBottom: 14 },
+  sel: { width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid #3c3c3c", background: "#2d2d30", color: "#e0e0e0", fontSize: 14, outline: "none", boxSizing: "border-box", marginBottom: 14 },
+  ta: { width: "100%", padding: "10px 14px", borderRadius: 10, border: "1px solid #3c3c3c", background: "#2d2d30", color: "#e0e0e0", fontSize: 14, outline: "none", resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" },
+  cardWrap: { marginBottom: 16 },
+  error: { background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)", color: "#f87171", borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 16 },
+  warn: { padding: 12, background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.35)", borderRadius: 10, color: "#fbbf24", fontSize: 13 },
+  muted: { color: "#7a7a7a", fontSize: 12, margin: "0 0 8px", paddingLeft: 4 },
+  code: { background: "#1e1e1e", margin: 0, padding: 16, fontFamily: "'Consolas', 'Fira Code', monospace", fontSize: 13, color: "#e6edf3", lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 500, overflowY: "auto" },
 };

@@ -93,7 +93,7 @@ export default function Login() {
             onSuccess={handleGoogle}
             onError={() => setError("Google login failed")}
             width="100%"
-            theme="outline"
+            theme="filled_black"
             size="large"
             text={isRegister ? "signup_with" : "signin_with"}
           />
@@ -122,34 +122,35 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "linear-gradient(135deg, #0f0c29, #302b63, #24243e)",
-    fontFamily: "'Segoe UI', system-ui, sans-serif",
+    background: "#1e1e1e",
+    fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
   },
   card: {
-    background: "#1e1e2e",
+    background: "#252526",
     borderRadius: "16px",
     padding: "40px",
     width: "100%",
     maxWidth: "400px",
-    boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+    boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+    border: "1px solid #333",
   },
   title: {
-    color: "#fff",
+    color: "#e0e0e0",
     fontSize: "28px",
     fontWeight: 700,
     margin: "0 0 4px",
     textAlign: "center",
   },
   subtitle: {
-    color: "#888",
+    color: "#7a7a7a",
     fontSize: "14px",
     margin: "0 0 24px",
     textAlign: "center",
   },
   error: {
-    background: "#ff4d4f22",
-    border: "1px solid #ff4d4f",
-    color: "#ff4d4f",
+    background: "rgba(239,68,68,0.12)",
+    border: "1px solid rgba(239,68,68,0.35)",
+    color: "#f87171",
     borderRadius: "8px",
     padding: "10px",
     fontSize: "13px",
@@ -164,9 +165,9 @@ const styles = {
   input: {
     padding: "12px 16px",
     borderRadius: "8px",
-    border: "1px solid #333",
-    background: "#2a2a3e",
-    color: "#fff",
+    border: "1px solid #3c3c3c",
+    background: "#2d2d30",
+    color: "#e0e0e0",
     fontSize: "14px",
     outline: "none",
   },
@@ -174,7 +175,7 @@ const styles = {
     padding: "12px",
     borderRadius: "8px",
     border: "none",
-    background: "linear-gradient(135deg, #667eea, #764ba2)",
+    background: "#6366f1",
     color: "#fff",
     fontSize: "15px",
     fontWeight: 600,
@@ -188,7 +189,7 @@ const styles = {
     gap: "12px",
   },
   dividerText: {
-    color: "#555",
+    color: "#7a7a7a",
     fontSize: "13px",
     flex: "none",
     padding: "0 8px",
@@ -203,7 +204,7 @@ const styles = {
     justifyContent: "center",
   },
   toggle: {
-    color: "#888",
+    color: "#7a7a7a",
     fontSize: "13px",
     textAlign: "center",
     marginTop: "20px",
@@ -211,7 +212,7 @@ const styles = {
   toggleBtn: {
     background: "none",
     border: "none",
-    color: "#667eea",
+    color: "#818cf8",
     cursor: "pointer",
     fontSize: "13px",
     fontWeight: 600,
