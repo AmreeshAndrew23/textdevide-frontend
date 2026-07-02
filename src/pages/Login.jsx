@@ -92,7 +92,7 @@ export default function Login() {
           <GoogleLogin
             onSuccess={handleGoogle}
             onError={() => setError("Google login failed")}
-            width="100%"
+            width="320"
             theme="filled_black"
             size="large"
             text={isRegister ? "signup_with" : "signin_with"}
