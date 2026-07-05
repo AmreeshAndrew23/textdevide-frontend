@@ -46,6 +46,11 @@ export default function Dashboard() {
   const [screenApiLoading, setScreenApiLoading] = useState(false);
   const [showScreenCode, setShowScreenCode] = useState(false);
 
+  const [showSettings, setShowSettings] = useState(false);
+  const [githubToken, setGithubToken] = useState(user?.github_token || "");
+  const [githubSaving, setGithubSaving] = useState(false);
+  const [pushingGithub, setPushingGithub] = useState(false);
+
   useEffect(() => { fetchProjects(); }, []);
 
   const fetchProjects = async () => {
@@ -391,9 +396,43 @@ export default function Dashboard() {
               <div style={{ fontSize: 11, color: "#7a7a7a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user?.email}</div>
             </div>
           </div>
-          <button className="btn-secondary" onClick={logout} style={{ width: "100%", justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Log out</button>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+            <button className="btn-secondary" onClick={() => setShowSettings(true)} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>⚙ Settings</button>
+            <button className="btn-secondary" onClick={logout} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Log out</button>
+          </div>
         </div>
       </aside>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#252526", borderRadius: 12, padding: 32, width: 420, border: "1px solid #333", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+            <h3 style={{ color: "#e0e0e0", margin: "0 0 20px", fontSize: 18, fontWeight: 700 }}>Settings</h3>
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: "block", fontSize: 13, color: "#9ca3af", marginBottom: 6, fontWeight: 500 }}>GitHub Personal Access Token</label>
+              <input
+                type="password"
+                value={githubToken}
+                onChange={e => setGithubToken(e.target.value)}
+                placeholder="ghp_xxxxxxxxxxxx"
+                style={{ width: "100%", padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box" }}
+              />
+              <p style={{ fontSize: 11, color: "#6b7280", marginTop: 6 }}>Used to auto-create GitHub repos when you start a project. Needs <code>repo</code> scope.</p>
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button className="btn-secondary" onClick={() => setShowSettings(false)} style={{ padding: "8px 18px" }}>Cancel</button>
+              <button className="btn-primary" disabled={githubSaving} onClick={async () => {
+                setGithubSaving(true);
+                try {
+                  await api.put("/auth/me", { github_token: githubToken });
+                  setShowSettings(false);
+                } catch (e) { alert("Failed to save token"); }
+                finally { setGithubSaving(false); }
+              }} style={{ padding: "8px 18px" }}>{githubSaving ? "Saving..." : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main */}
       <main style={S.main}>
@@ -403,6 +442,28 @@ export default function Dashboard() {
             {selectedProject ? selectedProject.name : "Workspace"}
           </h2>
           {selectedProject && <span style={S.badge}>{lang}</span>}
+          {selectedProject?.github_repo_url && (
+            <a href={selectedProject.github_repo_url} target="_blank" rel="noreferrer"
+              style={{ fontSize: 12, color: "#818cf8", textDecoration: "none", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", border: "1px solid #3c3c3c", borderRadius: 6, background: "#1e1e1e" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              {selectedProject.github_repo}
+            </a>
+          )}
+          {selectedProject && (
+            <button className="btn-secondary" disabled={pushingGithub} onClick={async () => {
+              setPushingGithub(true);
+              try {
+                const res = await api.post(`/projects/${selectedProject.id}/push-to-github`);
+                setSaveMsg(res.data.message);
+                setTimeout(() => setSaveMsg(""), 4000);
+                const updated = await api.get(`/projects/${selectedProject.id}`);
+                setSelectedProject(updated.data);
+              } catch (e) { setError(e.response?.data?.detail || "Push failed"); }
+              finally { setPushingGithub(false); }
+            }} style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 5 }}>
+              {pushingGithub ? "Pushing..." : "↑ Push to GitHub"}
+            </button>
+          )}
           <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 13, padding: "8px 14px" }}>+ New</button>
         </header>
 
