@@ -455,7 +455,7 @@ export default function Dashboard() {
               try {
                 const res = await api.post(`/projects/${selectedProject.id}/push-to-github`);
                 setSaveMsg(res.data.message);
-                setTimeout(() => setSaveMsg(""), 4000);
+                setTimeout(() => setSaveMsg(""), 5000);
                 const updated = await api.get(`/projects/${selectedProject.id}`);
                 setSelectedProject(updated.data);
               } catch (e) { setError(e.response?.data?.detail || "Push failed"); }
