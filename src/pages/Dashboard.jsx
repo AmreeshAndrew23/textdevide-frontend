@@ -7,8 +7,12 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
 
+// Fallbacks used until /auth/config/options loads
+const DEFAULT_DATE_FORMATS = ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "DD-MMM-YYYY", "DD.MM.YYYY"];
+const DEFAULT_LANGUAGE_OPTIONS = [{ code: "en", label: "English" }];
+
 export default function Dashboard() {
-  const { user, logout } = useAuth();
+  const { user, logout, setUser } = useAuth();
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -51,7 +55,44 @@ export default function Dashboard() {
   const [githubSaving, setGithubSaving] = useState(false);
   const [pushingGithub, setPushingGithub] = useState(false);
 
+  // Configuration (date format + language)
+  const [showConfig, setShowConfig] = useState(false);
+  const [dateFormatOptions, setDateFormatOptions] = useState(DEFAULT_DATE_FORMATS);
+  const [languageOptions, setLanguageOptions] = useState(DEFAULT_LANGUAGE_OPTIONS);
+  const [dateFormat, setDateFormat] = useState(user?.date_format || "YYYY-MM-DD");
+  const [language, setLanguage] = useState(user?.language || "en");
+  const [configSaving, setConfigSaving] = useState(false);
+
   useEffect(() => { fetchProjects(); }, []);
+
+  // Load dropdown options for the Configuration screen
+  useEffect(() => {
+    api.get("/auth/config/options")
+      .then(res => {
+        if (res.data?.date_formats?.length) setDateFormatOptions(res.data.date_formats);
+        if (res.data?.languages?.length) setLanguageOptions(res.data.languages);
+      })
+      .catch(e => console.error(e));
+  }, []);
+
+  // Keep config selects in sync when the user loads/changes
+  useEffect(() => {
+    if (user?.date_format) setDateFormat(user.date_format);
+    if (user?.language) setLanguage(user.language);
+  }, [user?.date_format, user?.language]);
+
+  const handleSaveConfig = async () => {
+    setConfigSaving(true);
+    try {
+      const res = await api.put("/auth/me", { date_format: dateFormat, language });
+      setUser(res.data);
+      setShowConfig(false);
+    } catch (e) {
+      alert("Failed to save configuration");
+    } finally {
+      setConfigSaving(false);
+    }
+  };
 
   const fetchProjects = async () => {
     try { setProjects((await api.get("/projects")).data); } catch (e) { console.error(e); }
@@ -397,7 +438,10 @@ export default function Dashboard() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            <button className="btn-secondary" onClick={() => setShowSettings(true)} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>⚙ Settings</button>
+            <button className="btn-secondary" onClick={() => setShowConfig(true)} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>⚙ Configuration</button>
+            <button className="btn-secondary" onClick={() => setShowSettings(true)} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Settings</button>
+          </div>
+          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
             <button className="btn-secondary" onClick={logout} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Log out</button>
           </div>
         </div>
@@ -424,11 +468,43 @@ export default function Dashboard() {
               <button className="btn-primary" disabled={githubSaving} onClick={async () => {
                 setGithubSaving(true);
                 try {
-                  await api.put("/auth/me", { github_token: githubToken });
+                  const res = await api.put("/auth/me", { github_token: githubToken.trim() });
+                  setUser(res.data);
                   setShowSettings(false);
                 } catch (e) { alert("Failed to save token"); }
                 finally { setGithubSaving(false); }
               }} style={{ padding: "8px 18px" }}>{githubSaving ? "Saving..." : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Configuration Modal */}
+      {showConfig && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowConfig(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#252526", borderRadius: 12, padding: 32, width: 420, border: "1px solid #333", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+            <h3 style={{ color: "#e0e0e0", margin: "0 0 6px", fontSize: 18, fontWeight: 700 }}>Configuration</h3>
+            <p style={{ margin: "0 0 20px", fontSize: 13, color: "#7a7a7a" }}>Set your preferred date format and language.</p>
+
+            <div style={{ marginBottom: 18 }}>
+              <label style={{ display: "block", fontSize: 13, color: "#9ca3af", marginBottom: 6, fontWeight: 500 }}>Date Format</label>
+              <select value={dateFormat} onChange={e => setDateFormat(e.target.value)}
+                style={{ width: "100%", padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box", cursor: "pointer" }}>
+                {dateFormatOptions.map(f => <option key={f} value={f} style={{ background: "#2d2d30" }}>{f}</option>)}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: 24 }}>
+              <label style={{ display: "block", fontSize: 13, color: "#9ca3af", marginBottom: 6, fontWeight: 500 }}>Language</label>
+              <select value={language} onChange={e => setLanguage(e.target.value)}
+                style={{ width: "100%", padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box", cursor: "pointer" }}>
+                {languageOptions.map(l => <option key={l.code} value={l.code} style={{ background: "#2d2d30" }}>{l.label}</option>)}
+              </select>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button className="btn-secondary" onClick={() => setShowConfig(false)} style={{ padding: "8px 18px" }}>Cancel</button>
+              <button className="btn-primary" disabled={configSaving} onClick={handleSaveConfig} style={{ padding: "8px 18px" }}>{configSaving ? "Saving..." : "Save"}</button>
             </div>
           </div>
         </div>
