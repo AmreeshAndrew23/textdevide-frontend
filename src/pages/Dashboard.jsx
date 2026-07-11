@@ -56,7 +56,6 @@ export default function Dashboard() {
   const [pushingGithub, setPushingGithub] = useState(false);
 
   // Configuration (date format + language)
-  const [showConfig, setShowConfig] = useState(false);
   const [dateFormatOptions, setDateFormatOptions] = useState(DEFAULT_DATE_FORMATS);
   const [languageOptions, setLanguageOptions] = useState(DEFAULT_LANGUAGE_OPTIONS);
   const [dateFormat, setDateFormat] = useState(user?.date_format || "YYYY-MM-DD");
@@ -86,7 +85,8 @@ export default function Dashboard() {
     try {
       const res = await api.put("/auth/me", { date_format: dateFormat, language });
       setUser(res.data);
-      setShowConfig(false);
+      setSaveMsg("Configuration saved");
+      setTimeout(() => setSaveMsg(""), 3000);
     } catch (e) {
       alert("Failed to save configuration");
     } finally {
@@ -258,54 +258,77 @@ export default function Dashboard() {
     } catch (err) { setError(err.response?.data?.detail || "Delete failed"); }
   };
 
-  const handleGenerateScreen = async () => {
-    if (!screenDesc.trim()) { setError("Enter a screen description first"); return; }
-    setError("");
-    setScreenXmlLoading(true);
-    let currentScreenId = activeScreenId;
-
-    // Create screen entry if new
-    if (!currentScreenId) {
-      const name = screenName.trim() || screenDesc.substring(0, 40).trim();
-      try {
-        const res = await api.post(`/projects/${selectedProject.id}/screens`, { name, description: screenDesc });
-        const parsed = _syncScreens(res.data);
-        currentScreenId = parsed[parsed.length - 1].id;
-        setActiveScreenId(currentScreenId);
-        setScreenName(name);
-      } catch (err) { setError(err.response?.data?.detail || "Failed to create screen"); setScreenXmlLoading(false); return; }
+  // Generate XML + HTML for one screen entry (create it first if screenId is null)
+  const _generateOneScreen = async (screenId, name, desc) => {
+    if (!screenId) {
+      const res = await api.post(`/projects/${selectedProject.id}/screens`, { name, description: desc });
+      const parsed = _syncScreens(res.data);
+      screenId = parsed[parsed.length - 1].id;
     } else {
-      // Save name/description update first
       try {
-        const res = await api.put(`/projects/${selectedProject.id}/screens/${currentScreenId}`, { name: screenName, description: screenDesc });
+        const res = await api.put(`/projects/${selectedProject.id}/screens/${screenId}`, { name, description: desc });
         _syncScreens(res.data);
       } catch (e) { /* non-critical */ }
     }
 
-    // Generate XML
-    setScreenXml(""); setScreenHtml(""); setScreenApi("");
-    let freshXml = "";
-    try {
-      const xmlRes = await api.post(`/projects/${selectedProject.id}/screens/${currentScreenId}/generate-xml`, { description: screenDesc });
-      const parsed = _syncScreens(xmlRes.data);
-      const updated = parsed.find(s => s.id === currentScreenId);
-      freshXml = updated?.xml || "";
-      setScreenXml(freshXml);
-      setScreenTab("xml");
-    } catch (err) { setError(err.response?.data?.detail || "XML generation failed"); setScreenXmlLoading(false); return; }
-    setScreenXmlLoading(false);
+    const xmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-xml`, { description: desc });
+    let parsed = _syncScreens(xmlRes.data);
+    const xml = parsed.find(s => s.id === screenId)?.xml || "";
 
-    // Auto-chain HTML
-    if (!freshXml) return;
-    setScreenHtmlLoading(true);
+    let html = "";
+    if (xml) {
+      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang });
+      parsed = _syncScreens(htmlRes.data);
+      html = parsed.find(s => s.id === screenId)?.html || "";
+    }
+    return { screenId, name, desc, xml, html };
+  };
+
+  const handleGenerateScreen = async () => {
+    if (!screenDesc.trim()) { setError("Enter a screen description first"); return; }
+    setError("");
+    setScreenXmlLoading(true);
+    setScreenXml(""); setScreenHtml(""); setScreenApi("");
+
+    // Step 1: ask the AI whether this description implies one screen or several
+    let intents = [{ name: screenName.trim() || screenDesc.substring(0, 40).trim(), description: screenDesc }];
     try {
-      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${currentScreenId}/generate-html`, { xml: freshXml, frontend_lang: frontendLang });
-      const parsed = _syncScreens(htmlRes.data);
-      const updated = parsed.find(s => s.id === currentScreenId);
-      setScreenHtml(updated?.html || "");
-      setScreenTab("html");
-    } catch (err) { setError(err.response?.data?.detail || "HTML generation failed"); }
-    finally { setScreenHtmlLoading(false); }
+      const intentRes = await api.post(`/projects/${selectedProject.id}/screens/detect-intents`, { description: screenDesc });
+      if (intentRes.data?.screens?.length) intents = intentRes.data.screens;
+    } catch (e) { /* fall back to treating it as a single screen */ }
+
+    // Step 2: create/update + generate (XML then HTML) for each detected screen.
+    // The first intent reuses the currently open screen (if any); extra intents become new screens.
+    let results = [];
+    try {
+      for (let i = 0; i < intents.length; i++) {
+        const item = intents[i];
+        const name = item.name || screenDesc.substring(0, 40).trim();
+        const desc = item.description || screenDesc;
+        const screenId = i === 0 ? activeScreenId : null;
+        results.push(await _generateOneScreen(screenId, name, desc));
+        if (i === 0) setScreenHtmlLoading(true);
+      }
+    } catch (err) {
+      setError(err.response?.data?.detail || "Screen generation failed");
+      setScreenXmlLoading(false); setScreenHtmlLoading(false);
+      return;
+    }
+    setScreenXmlLoading(false); setScreenHtmlLoading(false);
+
+    // Show the first generated screen in the editor
+    const first = results[0];
+    setActiveScreenId(first.screenId);
+    setScreenName(first.name);
+    setScreenDesc(first.desc);
+    setScreenXml(first.xml);
+    setScreenHtml(first.html);
+    setScreenTab(first.html ? "html" : "xml");
+
+    if (results.length > 1) {
+      setSaveMsg(`Generated ${results.length} screens: ${results.map(r => r.name).join(", ")}`);
+      setTimeout(() => setSaveMsg(""), 5000);
+    }
   };
 
   const handleRegenHtml = async () => {
@@ -384,6 +407,7 @@ export default function Dashboard() {
         { key: "arch-db", label: "DB Schema" },
         { key: "arch-validation", label: "Validation" },
         { key: "arch-ui", label: "User Interface" },
+        { key: "arch-config", label: "Configuration" },
       ],
     },
   ];
@@ -438,7 +462,6 @@ export default function Dashboard() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            <button className="btn-secondary" onClick={() => setShowConfig(true)} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>⚙ Configuration</button>
             <button className="btn-secondary" onClick={() => setShowSettings(true)} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Settings</button>
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
@@ -474,37 +497,6 @@ export default function Dashboard() {
                 } catch (e) { alert("Failed to save token"); }
                 finally { setGithubSaving(false); }
               }} style={{ padding: "8px 18px" }}>{githubSaving ? "Saving..." : "Save"}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Configuration Modal */}
-      {showConfig && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowConfig(false)}>
-          <div onClick={e => e.stopPropagation()} style={{ background: "#252526", borderRadius: 12, padding: 32, width: 420, border: "1px solid #333", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
-            <h3 style={{ color: "#e0e0e0", margin: "0 0 6px", fontSize: 18, fontWeight: 700 }}>Configuration</h3>
-            <p style={{ margin: "0 0 20px", fontSize: 13, color: "#7a7a7a" }}>Set your preferred date format and language.</p>
-
-            <div style={{ marginBottom: 18 }}>
-              <label style={{ display: "block", fontSize: 13, color: "#9ca3af", marginBottom: 6, fontWeight: 500 }}>Date Format</label>
-              <select value={dateFormat} onChange={e => setDateFormat(e.target.value)}
-                style={{ width: "100%", padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box", cursor: "pointer" }}>
-                {dateFormatOptions.map(f => <option key={f} value={f} style={{ background: "#2d2d30" }}>{f}</option>)}
-              </select>
-            </div>
-
-            <div style={{ marginBottom: 24 }}>
-              <label style={{ display: "block", fontSize: 13, color: "#9ca3af", marginBottom: 6, fontWeight: 500 }}>Language</label>
-              <select value={language} onChange={e => setLanguage(e.target.value)}
-                style={{ width: "100%", padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box", cursor: "pointer" }}>
-                {languageOptions.map(l => <option key={l.code} value={l.code} style={{ background: "#2d2d30" }}>{l.label}</option>)}
-              </select>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <button className="btn-secondary" onClick={() => setShowConfig(false)} style={{ padding: "8px 18px" }}>Cancel</button>
-              <button className="btn-primary" disabled={configSaving} onClick={handleSaveConfig} style={{ padding: "8px 18px" }}>{configSaving ? "Saving..." : "Save"}</button>
             </div>
           </div>
         </div>
@@ -870,6 +862,37 @@ export default function Dashboard() {
                 </div>
               )}
 
+              {/* ===== ARCHITECT VIEW: CONFIGURATION ===== */}
+              {activeSection === "arch-config" && (
+                <div>
+                  <div style={{ marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>Configuration</h3>
+                    <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>Set your preferred date format and language.</p>
+                  </div>
+                  <div className="card" style={{ padding: 28, maxWidth: 420 }}>
+                    <div style={{ marginBottom: 18 }}>
+                      <label style={{ display: "block", fontSize: 13, color: "#9ca3af", marginBottom: 6, fontWeight: 500 }}>Date Format</label>
+                      <select value={dateFormat} onChange={e => setDateFormat(e.target.value)}
+                        style={{ width: "100%", padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box", cursor: "pointer" }}>
+                        {dateFormatOptions.map(f => <option key={f} value={f} style={{ background: "#2d2d30" }}>{f}</option>)}
+                      </select>
+                    </div>
+
+                    <div style={{ marginBottom: 24 }}>
+                      <label style={{ display: "block", fontSize: 13, color: "#9ca3af", marginBottom: 6, fontWeight: 500 }}>Language</label>
+                      <select value={language} onChange={e => setLanguage(e.target.value)}
+                        style={{ width: "100%", padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box", cursor: "pointer" }}>
+                        {languageOptions.map(l => <option key={l.code} value={l.code} style={{ background: "#2d2d30" }}>{l.label}</option>)}
+                      </select>
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      <button className="btn-primary" disabled={configSaving} onClick={handleSaveConfig} style={{ padding: "8px 18px" }}>{configSaving ? "Saving..." : "Save"}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Save FAB */}
               <div style={{ position: "fixed", bottom: 24, right: 28, zIndex: 100, display: "flex", alignItems: "center", gap: 10 }}>
                 {saveMsg && <div className="toast">{saveMsg}</div>}
@@ -1034,7 +1057,7 @@ function TreeView({ entities, expanded, toggle }) {
           <div style={{ borderLeft: "2px solid #333", paddingLeft: 12, marginLeft: 6 }}>
             <div className="tree-node" onClick={() => toggle(t.name)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", cursor: "pointer" }}>
               <span style={{ fontSize: 10, color: "#7a7a7a", width: 14 }}>{expanded[t.name] ? "▼" : "▶"}</span>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "#fff", background: "#22c55e", padding: "2px 8px", borderRadius: 4 }}>Table: {t.name}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#052e16", background: "#4ade80", padding: "2px 8px", borderRadius: 4 }}>Table: {t.name}</span>
             </div>
           </div>
           {expanded[t.name] && t.columns?.map(c => (
@@ -1042,7 +1065,7 @@ function TreeView({ entities, expanded, toggle }) {
               <div style={{ borderLeft: "2px solid #333", paddingLeft: 12, marginLeft: 6 }}>
                 <div className="tree-node" onClick={() => toggle(`${t.name}.${c.name}`)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 4px", cursor: "pointer" }}>
                   <span style={{ fontSize: 10, color: "#7a7a7a", width: 14 }}>{expanded[`${t.name}.${c.name}`] ? "▼" : "▶"}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#fff", background: "#16a34a", padding: "2px 8px", borderRadius: 4 }}>Col: {c.name}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#052e16", background: "#4ade80", padding: "2px 8px", borderRadius: 4 }}>Col: {c.name}</span>
                 </div>
               </div>
               {expanded[`${t.name}.${c.name}`] && (
