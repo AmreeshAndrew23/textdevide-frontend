@@ -50,6 +50,10 @@ export default function Dashboard() {
   const [screenApiLoading, setScreenApiLoading] = useState(false);
   const [showScreenCode, setShowScreenCode] = useState(false);
 
+  // Ask about this project
+  const [askQuestion, setAskQuestion] = useState("");
+  const [askHistory, setAskHistory] = useState([]);
+
   const [showSettings, setShowSettings] = useState(false);
   const [githubToken, setGithubToken] = useState(user?.github_token || "");
   const [githubSaving, setGithubSaving] = useState(false);
@@ -392,6 +396,15 @@ export default function Dashboard() {
     return map[ext] || "javascript";
   };
 
+  const handleAsk = () => {
+    const question = askQuestion.trim();
+    if (!question) return;
+    const answer = answerProjectQuestion(question, entities, screens, selectedProject) ||
+      "I can currently answer questions about tables, columns, screens, primary/foreign keys, and project language/status — try things like \"list all tables\" or \"list screen names\".";
+    setAskHistory(h => [...h, { question, answer }]);
+    setAskQuestion("");
+  };
+
   const sectionGroups = [
     {
       heading: "WORKSPACE",
@@ -408,6 +421,12 @@ export default function Dashboard() {
         { key: "arch-validation", label: "Validation" },
         { key: "arch-ui", label: "User Interface" },
         { key: "arch-config", label: "Configuration" },
+      ],
+    },
+    {
+      heading: "ASK",
+      items: [
+        { key: "ask", label: "Ask about this project" },
       ],
     },
   ];
@@ -893,6 +912,52 @@ export default function Dashboard() {
                 </div>
               )}
 
+              {/* ===== ASK ABOUT THIS PROJECT ===== */}
+              {activeSection === "ask" && (
+                <div>
+                  <div style={{ marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>Ask about this project</h3>
+                    <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>Instant answers about your tables, columns, and screens — no AI call needed.</p>
+                  </div>
+
+                  <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        value={askQuestion}
+                        onChange={e => setAskQuestion(e.target.value)}
+                        onKeyDown={e => { if (e.key === "Enter") handleAsk(); }}
+                        placeholder='e.g. "list all the tables" or "list the screen names"'
+                        style={{ flex: 1, padding: "9px 12px", background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 7, color: "#e0e0e0", fontSize: 13, boxSizing: "border-box" }}
+                      />
+                      <button className="btn-primary" onClick={handleAsk} style={{ padding: "8px 18px" }}>Ask</button>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                      {["List all tables", "List the screen names", "List foreign keys", "Which screens are incomplete?"].map(ex => (
+                        <button key={ex} onClick={() => { setAskQuestion(ex); }}
+                          style={{ fontSize: 11, padding: "4px 10px", borderRadius: 12, background: "#2a2a2a", border: "1px solid #3c3c3c", color: "#9ca3af", cursor: "pointer" }}>
+                          {ex}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {askHistory.length === 0 ? (
+                    <div className="card" style={{ padding: 40, textAlign: "center", color: "#7a7a7a", fontSize: 13 }}>
+                      Ask a question about this project's tables, columns, or screens.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column-reverse", gap: 10 }}>
+                      {askHistory.map((qa, i) => (
+                        <div key={i} className="card" style={{ padding: 16 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#818cf8", marginBottom: 6 }}>{qa.question}</div>
+                          <div style={{ fontSize: 13, color: "#cfcfcf", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{qa.answer}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Save FAB */}
               <div style={{ position: "fixed", bottom: 24, right: 28, zIndex: 100, display: "flex", alignItems: "center", gap: 10 }}>
                 {saveMsg && <div className="toast">{saveMsg}</div>}
@@ -955,6 +1020,93 @@ function SideItem({ p, sel, onSel, onDel, tc, sec, setSec, sectionGroups }) {
       )}
     </div>
   );
+}
+
+// Answers common structural questions about a project locally (no AI call).
+// Returns null when the question isn't recognized, so the caller can show a fallback message.
+function answerProjectQuestion(question, entities, screens, project) {
+  const q = question.toLowerCase().trim();
+  const tables = entities?.tables || [];
+  screens = screens || [];
+  const findTable = () => tables.find(t => q.includes(t.name.toLowerCase()));
+
+  if (/\bscreen/.test(q)) {
+    if (/how many|count/.test(q)) return `This project has ${screens.length} screen${screens.length !== 1 ? "s" : ""}.`;
+    if (/missing|incomplete|not (generated|done|ready)|pending/.test(q)) {
+      const missing = screens.filter(s => !s.xml || !s.html);
+      return missing.length === 0
+        ? "All screens have XML and HTML generated."
+        : `${missing.length} screen${missing.length !== 1 ? "s" : ""} still need${missing.length !== 1 ? "" : "s"} generation: ${missing.map(s => s.name).join(", ")}.`;
+    }
+    if (/complete|ready|done|finished/.test(q)) {
+      const done = screens.filter(s => s.xml && s.html);
+      return done.length === 0
+        ? "No screens are fully generated yet."
+        : `${done.length} screen${done.length !== 1 ? "s" : ""} fully generated: ${done.map(s => s.name).join(", ")}.`;
+    }
+    if (/\bapi\b/.test(q)) {
+      const withApi = screens.filter(s => s.api);
+      return withApi.length === 0
+        ? "No screens have a REST API generated yet."
+        : `${withApi.length} screen${withApi.length !== 1 ? "s" : ""} with a REST API: ${withApi.map(s => s.name).join(", ")}.`;
+    }
+    return screens.length === 0
+      ? "This project has no screens yet."
+      : `This project has ${screens.length} screen${screens.length !== 1 ? "s" : ""}: ${screens.map(s => s.name).join(", ")}.`;
+  }
+
+  if (/\bcolumn|\bfield/.test(q)) {
+    const table = findTable();
+    if (table) {
+      const cols = (table.columns || []).map(c => c.name).join(", ") || "no columns";
+      return `${table.name} has ${table.columns?.length || 0} column${table.columns?.length !== 1 ? "s" : ""}: ${cols}.`;
+    }
+    if (/how many|count/.test(q)) {
+      const total = tables.reduce((sum, t) => sum + (t.columns?.length || 0), 0);
+      return `There are ${total} columns across ${tables.length} table${tables.length !== 1 ? "s" : ""}.`;
+    }
+    return null;
+  }
+
+  if (/primary key/.test(q)) {
+    const table = findTable();
+    if (table) {
+      const pk = (table.columns || []).find(c => c.pk);
+      return pk ? `The primary key of ${table.name} is "${pk.name}".` : `${table.name} has no primary key defined.`;
+    }
+    if (tables.length === 0) return "No database schema has been generated for this project yet.";
+    const pks = tables.map(t => `${t.name}.${(t.columns || []).find(c => c.pk)?.name || "?"}`);
+    return `Primary keys: ${pks.join(", ")}.`;
+  }
+
+  if (/foreign key|relationship/.test(q)) {
+    const fks = [];
+    for (const t of tables) {
+      for (const c of (t.columns || [])) {
+        if (c.fk) fks.push(`${t.name}.${c.name} → ${c.fk}`);
+      }
+    }
+    return fks.length === 0 ? "No foreign key relationships are defined yet." : `Foreign key relationships: ${fks.join("; ")}.`;
+  }
+
+  const existsMatch = q.match(/(?:is there|does).*table (?:called |named )?["']?(\w+)["']?|table (\w+) exist/);
+  if (existsMatch) {
+    const name = (existsMatch[1] || existsMatch[2] || "").toLowerCase();
+    const found = tables.find(t => t.name.toLowerCase() === name);
+    return found ? `Yes, "${found.name}" exists with ${found.columns?.length || 0} columns.` : `No table named "${name}" was found.`;
+  }
+
+  if (/\btable/.test(q)) {
+    if (/how many|count/.test(q)) return `This project has ${tables.length} table${tables.length !== 1 ? "s" : ""}.`;
+    return tables.length === 0
+      ? "No database schema has been generated for this project yet."
+      : `This project has ${tables.length} table${tables.length !== 1 ? "s" : ""}: ${tables.map(t => t.name).join(", ")}.`;
+  }
+
+  if (/language/.test(q)) return `Backend language: ${project?.language || "Python"}. Frontend framework: ${project?.frontend_language || "React"}.`;
+  if (/status/.test(q)) return `This project's status is "${project?.status || "draft"}".`;
+
+  return null;
 }
 
 function entitiesToMermaid(entities) {
