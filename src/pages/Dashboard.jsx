@@ -16,7 +16,7 @@ export default function Dashboard() {
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [activeSection, setActiveSection] = useState("schema");
+  const [activeSection, setActiveSection] = useState("workbench");
 
   const [showNewModal, setShowNewModal] = useState(false);
   const [newName, setNewName] = useState("");
@@ -35,6 +35,15 @@ export default function Dashboard() {
   const [validationLoading, setValidationLoading] = useState(false);
 
   const [frontendLang, setFrontendLang] = useState("React");
+
+  // Architect Workbench (single-prompt requirement -> schema + UI + validation)
+  const [workbenchRequirement, setWorkbenchRequirement] = useState("");
+  const [workbenchFollowUp, setWorkbenchFollowUp] = useState("");
+  const [workbenchLoading, setWorkbenchLoading] = useState(false);
+  const [workbenchConfirming, setWorkbenchConfirming] = useState(false);
+  const [workbenchError, setWorkbenchError] = useState("");
+  const [workbenchChanges, setWorkbenchChanges] = useState(null);
+  const [workbenchDraft, setWorkbenchDraft] = useState(null);
 
   // Multi-screen state
   const [screens, setScreens] = useState([]);
@@ -106,7 +115,7 @@ export default function Dashboard() {
     setSelectedProject(data);
     setDescription(data.description || "");
     setFeatures(data.features || "");
-    setActiveSection("schema");
+    setActiveSection("workbench");
     setValidationRules(data.validation_rules || "");
     setValidationCode(data.validation_code || "");
     setFrontendLang(data.frontend_language || "React");
@@ -115,6 +124,7 @@ export default function Dashboard() {
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
     setScreenTab("html"); setShowScreenCode(false);
+    setWorkbenchRequirement(""); setWorkbenchFollowUp(""); setWorkbenchChanges(null); setWorkbenchDraft(null); setWorkbenchError("");
     setError(""); setSaveMsg("");
   };
 
@@ -171,6 +181,52 @@ export default function Dashboard() {
       setSelectedProject(res.data); setRefineText(""); fetchProjects();
     } catch (err) { setError(err.response?.data?.detail || "Refinement failed"); }
     finally { setLoading(false); }
+  };
+
+  const handleWorkbenchInterpret = async (isFollowUp) => {
+    const requirement = (isFollowUp ? workbenchFollowUp : workbenchRequirement).trim();
+    if (!requirement) return;
+    setWorkbenchLoading(true); setWorkbenchError("");
+    try {
+      const body = { requirement };
+      if (isFollowUp && workbenchDraft) {
+        body.current_entities = workbenchDraft.entities;
+        body.current_screens = workbenchDraft.screens;
+        body.current_validation_rules = workbenchDraft.validation_rules;
+      }
+      const res = await api.post(`/projects/${selectedProject.id}/workbench/interpret`, body);
+      setWorkbenchChanges(res.data.changes);
+      setWorkbenchDraft({ entities: res.data.entities, screens: res.data.screens, validation_rules: res.data.validation_rules });
+      if (isFollowUp) setWorkbenchFollowUp("");
+    } catch (err) {
+      setWorkbenchError(err.response?.data?.detail || "Couldn't interpret the requirement. Try rephrasing it with more detail.");
+    } finally {
+      setWorkbenchLoading(false);
+    }
+  };
+
+  const handleWorkbenchConfirm = async () => {
+    if (!workbenchDraft) return;
+    setWorkbenchConfirming(true); setWorkbenchError("");
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/workbench/confirm`, workbenchDraft);
+      _syncScreens(res.data);
+      setValidationCode(res.data.validation_code || "");
+      setValidationRules(res.data.validation_rules || "");
+      fetchProjects();
+      setWorkbenchChanges(null); setWorkbenchDraft(null);
+      setWorkbenchRequirement(""); setWorkbenchFollowUp("");
+      setSaveMsg("Generated database schema, screens, and validation code.");
+      setTimeout(() => setSaveMsg(""), 5000);
+    } catch (err) {
+      setWorkbenchError(err.response?.data?.detail || "Generation failed");
+    } finally {
+      setWorkbenchConfirming(false);
+    }
+  };
+
+  const handleWorkbenchDiscard = () => {
+    setWorkbenchChanges(null); setWorkbenchDraft(null); setWorkbenchFollowUp("");
   };
 
   const handleFinalize = async () => {
@@ -409,6 +465,7 @@ export default function Dashboard() {
     {
       heading: "WORKSPACE",
       items: [
+        { key: "workbench", label: "Architect Workbench" },
         { key: "schema", label: "Database Schema" },
         { key: "validation", label: "Validation" },
         { key: "ui", label: "User Interface" },
@@ -558,6 +615,76 @@ export default function Dashboard() {
           {selectedProject ? (
             <div className="fade-in" style={{ maxWidth: 820, paddingBottom: 80 }}>
               {error && <div style={S.error}>{error}</div>}
+
+              {/* ARCHITECT WORKBENCH */}
+              {activeSection === "workbench" && (
+                <div>
+                  <div style={{ marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>Architect Workbench</h3>
+                    <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a", maxWidth: 620 }}>
+                      Describe the technical requirement in plain language. It will be translated into database schema changes, UI screens, and business rules — refine it below, then generate everything in one go.
+                    </p>
+                  </div>
+
+                  <div className="card" style={{ padding: 20 }}>
+                    <label style={S.lbl}>Technical Requirement</label>
+                    <textarea
+                      value={workbenchRequirement}
+                      onChange={e => setWorkbenchRequirement(e.target.value)}
+                      placeholder="e.g. Customers should be able to save multiple shipping addresses. The checkout screen needs an address dropdown, and orders over $500 require manager approval."
+                      style={S.ta}
+                      rows={6}
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
+                      <button className="btn-primary" onClick={() => handleWorkbenchInterpret(false)} disabled={workbenchLoading || !workbenchRequirement.trim()} style={{ opacity: (workbenchLoading || !workbenchRequirement.trim()) ? 0.6 : 1 }}>
+                        {workbenchLoading ? <><span className="spinner" /> Analyzing...</> : "Show me what you understood"}
+                      </button>
+                      {workbenchError && <span style={{ fontSize: 12.5, color: "#ef4444" }}>{workbenchError}</span>}
+                    </div>
+                  </div>
+
+                  {!workbenchChanges && !workbenchLoading && (
+                    <p style={{ marginTop: 28, fontSize: 12, color: "#5a5a5a", textAlign: "center" }}>— the interpretation will appear below —</p>
+                  )}
+
+                  {workbenchChanges && (
+                    <>
+                      <WorkbenchGrid index="01" title="DB Schema changes" badgeCol="action_type" groupCol="entity_name"
+                        columns={[{ key: "entity_name", label: "Entity name" }, { key: "column_name", label: "Column name" }, { key: "action_type", label: "Action type" }]}
+                        rows={workbenchChanges.db_schema_changes || []} emptyHint="No database schema changes identified in this requirement." />
+                      <WorkbenchGrid index="02" title="Table Catalog"
+                        columns={[{ key: "entity_name", label: "Entity name" }, { key: "description", label: "One-line description (used for query routing)" }]}
+                        rows={workbenchChanges.table_catalog || []} emptyHint="No tables identified in this requirement." />
+                      <WorkbenchGrid index="03" title="UI Screens" groupCol="screen_name"
+                        columns={[{ key: "screen_name", label: "Screen name" }, { key: "ui_field_name", label: "UI field name" }, { key: "action", label: "Action" }]}
+                        rows={workbenchChanges.ui_screens || []} emptyHint="No UI screen changes identified in this requirement." />
+                      <WorkbenchGrid index="04" title="Business Rules" badgeCol="action"
+                        columns={[{ key: "rule_name", label: "Rule name" }, { key: "rule_description", label: "Rule description" }, { key: "action", label: "Action" }]}
+                        rows={workbenchChanges.business_rules || []} emptyHint="No business rules identified in this requirement." />
+
+                      <div className="card" style={{ padding: 20, marginTop: 24 }}>
+                        <label style={S.lbl}>Anything to change?</label>
+                        <textarea
+                          value={workbenchFollowUp}
+                          onChange={e => setWorkbenchFollowUp(e.target.value)}
+                          placeholder="e.g. Actually make the approval threshold $1000, and add a phone number field to the address form."
+                          style={S.ta}
+                          rows={3}
+                        />
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
+                          <button className="btn-secondary" onClick={() => handleWorkbenchInterpret(true)} disabled={workbenchLoading || !workbenchFollowUp.trim()} style={{ opacity: (workbenchLoading || !workbenchFollowUp.trim()) ? 0.6 : 1 }}>
+                            {workbenchLoading ? <><span className="spinner" /> Updating...</> : "Update interpretation"}
+                          </button>
+                          <button className="btn-primary" onClick={handleWorkbenchConfirm} disabled={workbenchConfirming || workbenchLoading} style={{ opacity: workbenchConfirming ? 0.6 : 1 }}>
+                            {workbenchConfirming ? <><span className="spinner" /> Generating schema, screens & validation...</> : "Yes, continue — generate everything"}
+                          </button>
+                          <button className="btn-secondary" onClick={handleWorkbenchDiscard} disabled={workbenchLoading || workbenchConfirming} style={{ marginLeft: "auto" }}>Discard</button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               {/* SCHEMA */}
               {activeSection === "schema" && (
@@ -982,6 +1109,66 @@ export default function Dashboard() {
   );
 }
 
+function ActionBadge({ value }) {
+  const v = (value || "").toLowerCase();
+  const color = v.includes("add") ? "#22c55e" : v.includes("remove") || v.includes("delete") ? "#ef4444"
+    : v.includes("modify") || v.includes("change") || v.includes("update") ? "#f59e0b" : "#8a8a8a";
+  return (
+    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color, border: `1px solid ${color}66`, background: `${color}1A`, borderRadius: 4, padding: "2px 8px", whiteSpace: "nowrap" }}>
+      {value}
+    </span>
+  );
+}
+
+function WorkbenchGrid({ index, title, columns, rows, badgeCol, groupCol, emptyHint }) {
+  let groupIndex = 0;
+  let prevGroupVal;
+  return (
+    <div style={{ marginTop: 22 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8 }}>
+        <span style={{ fontSize: 11, color: "#818cf8", fontFamily: "monospace" }}>{index}</span>
+        <h4 style={{ fontSize: 15, fontWeight: 700, color: "#e0e0e0", margin: 0 }}>{title}</h4>
+        <span style={{ fontSize: 11, color: "#7a7a7a" }}>{rows.length} {rows.length === 1 ? "item" : "items"}</span>
+      </div>
+      <div className="card" style={{ overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#1e1e1e" }}>
+              {columns.map(c => (
+                <th key={c.key} style={{ textAlign: "left", padding: "8px 14px", fontSize: 10.5, fontWeight: 600, letterSpacing: 0.6, textTransform: "uppercase", color: "#7a7a7a", borderBottom: "1px solid #333" }}>{c.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td colSpan={columns.length} style={{ padding: "18px 14px", fontSize: 12.5, color: "#6a6a6a", fontStyle: "italic" }}>{emptyHint}</td></tr>
+            ) : rows.map((row, i) => {
+              const groupVal = groupCol ? row[groupCol] : null;
+              const isNewGroup = !!groupCol && i > 0 && groupVal !== prevGroupVal;
+              if (isNewGroup) groupIndex += 1;
+              prevGroupVal = groupVal;
+              const zebra = groupCol ? groupIndex % 2 === 1 : i % 2 === 1;
+              return (
+                <tr key={i} style={{
+                  borderBottom: i < rows.length - 1 ? "1px solid #2a2a2a" : "none",
+                  borderTop: isNewGroup ? "2px solid #45455c" : "none",
+                  background: zebra ? "#242428" : "transparent",
+                }}>
+                  {columns.map(c => (
+                    <td key={c.key} style={{ padding: "9px 14px", fontSize: 12.5, color: "#cfcfcf", verticalAlign: "top" }}>
+                      {c.key === badgeCol ? <ActionBadge value={row[c.key]} /> : row[c.key]}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function SectionHeader({ text, count }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, margin: "16px 0 8px" }}>
@@ -1209,7 +1396,7 @@ function TreeView({ entities, expanded, toggle }) {
           <div style={{ borderLeft: "2px solid #333", paddingLeft: 12, marginLeft: 6 }}>
             <div className="tree-node" onClick={() => toggle(t.name)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", cursor: "pointer" }}>
               <span style={{ fontSize: 10, color: "#7a7a7a", width: 14 }}>{expanded[t.name] ? "▼" : "▶"}</span>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "#052e16", background: "#4ade80", padding: "2px 8px", borderRadius: 4 }}>Table: {t.name}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#fff" }}>Table: {t.name}</span>
             </div>
           </div>
           {expanded[t.name] && t.columns?.map(c => (
@@ -1217,7 +1404,7 @@ function TreeView({ entities, expanded, toggle }) {
               <div style={{ borderLeft: "2px solid #333", paddingLeft: 12, marginLeft: 6 }}>
                 <div className="tree-node" onClick={() => toggle(`${t.name}.${c.name}`)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 4px", cursor: "pointer" }}>
                   <span style={{ fontSize: 10, color: "#7a7a7a", width: 14 }}>{expanded[`${t.name}.${c.name}`] ? "▼" : "▶"}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#052e16", background: "#4ade80", padding: "2px 8px", borderRadius: 4 }}>Col: {c.name}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#fff" }}>Col: {c.name}</span>
                 </div>
               </div>
               {expanded[`${t.name}.${c.name}`] && (
