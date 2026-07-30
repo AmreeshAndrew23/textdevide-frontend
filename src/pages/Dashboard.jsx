@@ -21,6 +21,7 @@ export default function Dashboard() {
   const [showNewModal, setShowNewModal] = useState(false);
   const [newName, setNewName] = useState("");
   const [newLanguage, setNewLanguage] = useState("Python");
+  const [newFrontendLang, setNewFrontendLang] = useState("React");
 
   const [description, setDescription] = useState("");
   const [features, setFeatures] = useState("");
@@ -36,14 +37,31 @@ export default function Dashboard() {
 
   const [frontendLang, setFrontendLang] = useState("React");
 
-  // Architect Workbench (single-prompt requirement -> schema + UI + validation)
-  const [workbenchRequirement, setWorkbenchRequirement] = useState("");
-  const [workbenchFollowUp, setWorkbenchFollowUp] = useState("");
-  const [workbenchLoading, setWorkbenchLoading] = useState(false);
-  const [workbenchConfirming, setWorkbenchConfirming] = useState(false);
-  const [workbenchError, setWorkbenchError] = useState("");
-  const [workbenchChanges, setWorkbenchChanges] = useState(null);
-  const [workbenchDraft, setWorkbenchDraft] = useState(null);
+  // Schema->Screen Studio (structured screen definition + tabbed workspace)
+  const [studioTab, setStudioTab] = useState("preview"); // preview | frontend | backend | endpoints | entities | validations
+  const [studioPrimaryEntities, setStudioPrimaryEntities] = useState([]);
+  const [studioJoinedEntities, setStudioJoinedEntities] = useState([]);
+  const [studioGenerating, setStudioGenerating] = useState(false);
+  const [studioStep, setStudioStep] = useState("");
+  const [studioError, setStudioError] = useState("");
+  const [studioEndpoints, setStudioEndpoints] = useState(null);
+  const [studioEndpointsLoading, setStudioEndpointsLoading] = useState(false);
+  const [showNewEntityModal, setShowNewEntityModal] = useState(false);
+  const [newEntityPrompt, setNewEntityPrompt] = useState("");
+  const [newEntityGenerating, setNewEntityGenerating] = useState(false);
+  const [newEntityError, setNewEntityError] = useState("");
+  const [schemaUnresolved, setSchemaUnresolved] = useState([]);
+  const [schemaAssistantTable, setSchemaAssistantTable] = useState(null);
+  const [schemaAssistantTab, setSchemaAssistantTab] = useState("schema");
+  const [schemaAssistantChat, setSchemaAssistantChat] = useState([]);
+  const [schemaAssistantInput, setSchemaAssistantInput] = useState("");
+  const [schemaAssistantSending, setSchemaAssistantSending] = useState(false);
+  const [schemaAssistantSuggestions, setSchemaAssistantSuggestions] = useState([]);
+  const schemaAssistantInputRef = useRef(null);
+  useEffect(() => {
+    const el = schemaAssistantInputRef.current;
+    if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
+  }, [schemaAssistantInput]);
 
   // Multi-screen state
   const [screens, setScreens] = useState([]);
@@ -58,6 +76,16 @@ export default function Dashboard() {
   const [screenHtmlLoading, setScreenHtmlLoading] = useState(false);
   const [screenApiLoading, setScreenApiLoading] = useState(false);
   const [showScreenCode, setShowScreenCode] = useState(false);
+  const [studioShowMiddle, setStudioShowMiddle] = useState(true);
+  const [studioShowPreview, setStudioShowPreview] = useState(true);
+  const [screenChat, setScreenChat] = useState([]);
+  const [screenChatInput, setScreenChatInput] = useState("");
+  const screenChatInputRef = useRef(null);
+  useEffect(() => {
+    const el = screenChatInputRef.current;
+    if (el) { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }
+  }, [screenChatInput]);
+  const [screenChatSending, setScreenChatSending] = useState(false);
 
   // Ask about this project
   const [askQuestion, setAskQuestion] = useState("");
@@ -124,14 +152,15 @@ export default function Dashboard() {
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
     setScreenTab("html"); setShowScreenCode(false);
-    setWorkbenchRequirement(""); setWorkbenchFollowUp(""); setWorkbenchChanges(null); setWorkbenchDraft(null); setWorkbenchError("");
+    setStudioTab("preview"); setStudioPrimaryEntities([]); setStudioJoinedEntities([]); setStudioError(""); setStudioEndpoints(null);
+    setShowNewEntityModal(false); setNewEntityPrompt(""); setNewEntityError("");
     setError(""); setSaveMsg("");
   };
 
   const handleCreateProject = async () => {
     if (!newName.trim()) return;
     try {
-      const res = await api.post("/projects", { name: newName, language: newLanguage });
+      const res = await api.post("/projects", { name: newName, language: newLanguage, frontend_language: newFrontendLang });
       setProjects([res.data, ...projects]);
       selectProject(res.data);
       setShowNewModal(false); setNewName("");
@@ -151,21 +180,13 @@ export default function Dashboard() {
     } catch (e) { console.error(e); }
   };
 
-  const handleSaveToMongo = async () => {
-    setSaveMsg("");
-    try {
-      await api.post(`/projects/${selectedProject.id}/save-to-mongo`);
-      setSaveMsg("Project saved successfully!");
-      setTimeout(() => setSaveMsg(""), 3000);
-    } catch (err) { setError(err.response?.data?.detail || "Save failed"); }
-  };
-
   const handleExtract = async () => {
     if (!description.trim() || !features.trim()) { setError("Please fill in both fields"); return; }
     setLoading(true); setError("");
     try {
       const res = await api.post(`/projects/${selectedProject.id}/extract`, { description, features });
       setSelectedProject(res.data);
+      setSchemaUnresolved(res.data.unresolved || []);
       setValidationCode(res.data.validation_code || "");
       await api.put(`/projects/${selectedProject.id}`, { name: description.substring(0, 40).trim() || "Untitled" });
       fetchProjects();
@@ -179,54 +200,223 @@ export default function Dashboard() {
     try {
       const res = await api.post(`/projects/${selectedProject.id}/refine`, { entities: selectedProject.entities, instruction: refineText });
       setSelectedProject(res.data); setRefineText(""); fetchProjects();
+      setSchemaUnresolved(res.data.unresolved || []);
     } catch (err) { setError(err.response?.data?.detail || "Refinement failed"); }
     finally { setLoading(false); }
   };
 
-  const handleWorkbenchInterpret = async (isFollowUp) => {
-    const requirement = (isFollowUp ? workbenchFollowUp : workbenchRequirement).trim();
-    if (!requirement) return;
-    setWorkbenchLoading(true); setWorkbenchError("");
+  // "+ New entity from prompt" — extends the schema via the existing refine/extract endpoints.
+  const handleGenerateNewEntity = async () => {
+    if (!newEntityPrompt.trim()) return;
+    setNewEntityGenerating(true); setNewEntityError("");
     try {
-      const body = { requirement };
-      if (isFollowUp && workbenchDraft) {
-        body.current_entities = workbenchDraft.entities;
-        body.current_screens = workbenchDraft.screens;
-        body.current_validation_rules = workbenchDraft.validation_rules;
-      }
-      const res = await api.post(`/projects/${selectedProject.id}/workbench/interpret`, body);
-      setWorkbenchChanges(res.data.changes);
-      setWorkbenchDraft({ entities: res.data.entities, screens: res.data.screens, validation_rules: res.data.validation_rules });
-      if (isFollowUp) setWorkbenchFollowUp("");
-    } catch (err) {
-      setWorkbenchError(err.response?.data?.detail || "Couldn't interpret the requirement. Try rephrasing it with more detail.");
-    } finally {
-      setWorkbenchLoading(false);
-    }
-  };
-
-  const handleWorkbenchConfirm = async () => {
-    if (!workbenchDraft) return;
-    setWorkbenchConfirming(true); setWorkbenchError("");
-    try {
-      const res = await api.post(`/projects/${selectedProject.id}/workbench/confirm`, workbenchDraft);
-      _syncScreens(res.data);
-      setValidationCode(res.data.validation_code || "");
-      setValidationRules(res.data.validation_rules || "");
+      const res = selectedProject.entities
+        ? await api.post(`/projects/${selectedProject.id}/refine`, { entities: selectedProject.entities, instruction: `Add a new entity: ${newEntityPrompt}` })
+        : await api.post(`/projects/${selectedProject.id}/extract`, { description: newEntityPrompt, features: newEntityPrompt });
+      setSelectedProject(res.data);
       fetchProjects();
-      setWorkbenchChanges(null); setWorkbenchDraft(null);
-      setWorkbenchRequirement(""); setWorkbenchFollowUp("");
-      setSaveMsg("Generated database schema, screens, and validation code.");
-      setTimeout(() => setSaveMsg(""), 5000);
+      setShowNewEntityModal(false);
+      setNewEntityPrompt("");
     } catch (err) {
-      setWorkbenchError(err.response?.data?.detail || "Generation failed");
+      setNewEntityError(err.response?.data?.detail || "Failed to generate schema");
     } finally {
-      setWorkbenchConfirming(false);
+      setNewEntityGenerating(false);
     }
   };
 
-  const handleWorkbenchDiscard = () => {
-    setWorkbenchChanges(null); setWorkbenchDraft(null); setWorkbenchFollowUp("");
+  // Client-side mirror of the backend's _schema_suggestions heuristic, used only for the
+  // very first chip render when the assistant opens (before any chat round trip has happened).
+  const computeSchemaSuggestions = (table, otherTables) => {
+    const cols = table?.columns || [];
+    const suggestions = [];
+    const codeCol = cols.find(c => (c.name?.includes("code") || c.name?.endsWith("_no") || c.name?.endsWith("_number")) && !c.unique);
+    if (codeCol) suggestions.push(`Make ${codeCol.name} unique`);
+    const boolCol = cols.find(c => (c.type || "").toUpperCase().startsWith("BOOL") && !c.default);
+    if (boolCol) suggestions.push(`Add a default for ${boolCol.name}`);
+    if (!table?.audit_enabled) suggestions.push("Turn on auditing");
+    else if (!table?.history_enabled) suggestions.push("Keep a full change history");
+    if (otherTables?.length && !cols.some(c => c.fk)) suggestions.push(`Add a foreign key to ${otherTables[0].name}`);
+    if (!suggestions.length) suggestions.push("Add a new column", "Add a validation rule", "Rename a column");
+    return suggestions.slice(0, 3);
+  };
+
+  const openSchemaAssistant = (tableName) => {
+    const table = (entities?.tables || []).find(t => t.name === tableName);
+    const otherTables = (entities?.tables || []).filter(t => t.name !== tableName);
+    setSchemaAssistantTable(tableName);
+    setSchemaAssistantTab("schema");
+    setSchemaAssistantChat([{
+      role: "assistant",
+      text: `You're editing the ${tableName} table. Ask me to add columns, define foreign keys, set validations, or configure the auto-number.`,
+    }]);
+    setSchemaAssistantInput("");
+    setSchemaAssistantSuggestions(computeSchemaSuggestions(table, otherTables));
+  };
+
+  const closeSchemaAssistant = () => {
+    setSchemaAssistantTable(null);
+    setSchemaAssistantChat([]);
+    setSchemaAssistantInput("");
+    setSchemaAssistantSuggestions([]);
+  };
+
+  const handleSchemaAssistantSend = async (instructionOverride) => {
+    const instruction = (instructionOverride ?? schemaAssistantInput).trim();
+    if (!instruction || !schemaAssistantTable || schemaAssistantSending) return;
+    setSchemaAssistantSending(true);
+    setSchemaAssistantChat(c => [...c, { role: "user", text: instruction }]);
+    setSchemaAssistantInput("");
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/schema-assistant/${encodeURIComponent(schemaAssistantTable)}`, { instruction });
+      setSelectedProject(p => ({ ...p, entities: res.data.entities }));
+      const newMessages = [{ role: "assistant", text: res.data.summary }];
+      for (const u of res.data.unresolved || []) {
+        newMessages.push({ role: "note", blocking: u.blocking, text: (u.blocking ? "⚠ " : "ℹ ") + u.question });
+      }
+      setSchemaAssistantChat(c => [...c, ...newMessages]);
+      setSchemaAssistantSuggestions(res.data.suggestions || []);
+    } catch (err) {
+      setSchemaAssistantChat(c => [...c, { role: "assistant", text: err.response?.data?.detail || "Something went wrong applying that change." }]);
+    } finally {
+      setSchemaAssistantSending(false);
+    }
+  };
+
+  // Studio's "Generate Screen": save the structured definition (name + primary/joined
+  // entities + freeform description) then run the existing XML -> HTML generation chain.
+  // Finalizing a screen means the complete pipeline runs: XML (structure) -> HTML (live
+  // preview) -> backend code (routes + models, in the project's language) and frontend
+  // code (page component + API service, in the project's chosen frontend language). XML
+  // and HTML are saved for the preview, but the "deliverable" code shown to the user is
+  // the frontend + backend source, not the XML/HTML themselves.
+  const handleStudioGenerate = async () => {
+    if (!screenName.trim()) { setStudioError("Enter a screen name first"); return; }
+    setStudioGenerating(true); setStudioError(""); setStudioStep("Saving screen definition...");
+    let screenId = activeScreenId;
+    const payload = { name: screenName.trim(), description: screenDesc, primary_entities: studioPrimaryEntities, joined_entities: studioJoinedEntities };
+    try {
+      if (!screenId) {
+        const res = await api.post(`/projects/${selectedProject.id}/screens`, payload);
+        const parsed = _syncScreens(res.data);
+        screenId = parsed[parsed.length - 1].id;
+        setActiveScreenId(screenId);
+      } else {
+        _syncScreens((await api.put(`/projects/${selectedProject.id}/screens/${screenId}`, payload)).data);
+      }
+
+      // Selecting more than one primary entity signals "this is a navigation/landing screen",
+      // not a single-entity CRUD screen — the backend also detects this from the saved screen
+      // and injects the list of already-built screens so navigation targets are real, not made up.
+      const isHubScreen = studioPrimaryEntities.length > 1;
+      const contextLine = studioPrimaryEntities.length
+        ? isHubScreen
+          ? `This is a navigation/landing screen that routes to the other screens covering these entities: ${studioPrimaryEntities.join(", ")}. `
+          : `Primary entity: ${studioPrimaryEntities[0]}.${studioJoinedEntities.length ? ` Joined entities: ${studioJoinedEntities.join(", ")}.` : ""} `
+        : "";
+      setStudioStep("Generating screen structure (XML)...");
+      const xmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-xml`, { description: contextLine + screenDesc });
+      let parsed = _syncScreens(xmlRes.data);
+      const xml = parsed.find(s => s.id === screenId)?.xml || "";
+      setScreenXml(xml);
+      setScreenChat([]); setScreenChatInput("");  // fresh base generation invalidates prior chat
+      if (!xml) throw new Error("XML generation returned nothing");
+
+      setStudioStep("Generating live preview (HTML)...");
+      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang });
+      parsed = _syncScreens(htmlRes.data);
+      setScreenHtml(parsed.find(s => s.id === screenId)?.html || "");
+
+      setStudioStep(`Generating backend (${selectedProject.language}) + frontend (${frontendLang}) code...`);
+      const apiRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-api`, { xml });
+      parsed = _syncScreens(apiRes.data);
+      const apiCode = parsed.find(s => s.id === screenId)?.api || "";
+      setScreenApi(apiCode);
+      const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
+      try { setStudioEndpoints(contractsFile ? normalizeEndpoints(JSON.parse(contractsFile.code)) : null); }
+      catch { setStudioEndpoints(null); }
+
+      setStudioTab("preview");
+    } catch (err) {
+      setStudioError(err.response?.data?.detail || "Screen generation failed");
+    } finally {
+      setStudioGenerating(false); setStudioStep("");
+    }
+  };
+
+  // Iterative refinement chat, scoped to the currently selected screen. Runs once the
+  // basic version exists (screenXml is set). Only updates XML/HTML on each message —
+  // fast, cheap turnaround — rather than re-running the full backend+frontend code
+  // generation on every small tweak. The Backend/Frontend Code tabs clear themselves
+  // (screenApi resets server-side) so they never show code that's out of sync with the
+  // latest UI; regenerate them explicitly once you're done iterating.
+  const handleSendUiChat = async () => {
+    const instruction = screenChatInput.trim();
+    if (!instruction || !activeScreenId || screenChatSending) return;
+    setScreenChatSending(true); setStudioError("");
+    setScreenChat(c => [...c, { role: "user", text: instruction }]);
+    setScreenChatInput("");
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/refine-ui`, { instruction });
+      const parsed = _syncScreens(res.data);
+      const screen = parsed.find(s => s.id === activeScreenId);
+      setScreenXml(screen?.xml || "");
+      setScreenHtml(screen?.html || "");
+      setScreenApi(""); setStudioEndpoints(null);
+      setScreenChat(screen?.ui_chat || []);
+    } catch (err) {
+      setStudioError(err.response?.data?.detail || "Couldn't apply that change");
+      setScreenChat(c => c.slice(0, -1));  // roll back the optimistic user message on failure
+      setScreenChatInput(instruction);
+    } finally {
+      setScreenChatSending(false);
+    }
+  };
+
+  // REST Endpoints tab: reuses the existing per-screen API generation, then pulls the
+  // api_contracts.json file out of the === FILENAME: === bundle for a structured view.
+  // Tolerates whatever reasonable JSON shape the AI actually returns for api_contracts.json:
+  // {endpoints:[...]}, a bare array, or an OpenAPI-style object keyed by path -> method.
+  const normalizeEndpoints = (data) => {
+    if (!data) return null;
+    if (Array.isArray(data)) return data.length ? data : null;
+    if (Array.isArray(data.endpoints)) return data.endpoints.length ? data.endpoints : null;
+    const HTTP_METHODS = ["get", "post", "put", "patch", "delete"];
+    const looksLikePathMap = Object.keys(data).every(k => k.startsWith("/"));
+    if (looksLikePathMap) {
+      const rows = [];
+      for (const [path, methods] of Object.entries(data)) {
+        if (!methods || typeof methods !== "object") continue;
+        for (const [method, info] of Object.entries(methods)) {
+          if (!HTTP_METHODS.includes(method.toLowerCase())) continue;
+          rows.push({ method: method.toUpperCase(), path, description: info?.description || info?.summary || "", trigger: info?.trigger || "" });
+        }
+      }
+      return rows.length ? rows : null;
+    }
+    return null;
+  };
+
+  const handleLoadEndpoints = async () => {
+    if (!screenXml || !activeScreenId) return;
+    setStudioEndpointsLoading(true); setStudioError("");
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-api`, { xml: screenXml });
+      const parsed = _syncScreens(res.data);
+      const apiCode = parsed.find(s => s.id === activeScreenId)?.api || "";
+      setScreenApi(apiCode);
+      const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
+      let normalized = null;
+      if (contractsFile) {
+        try { normalized = normalizeEndpoints(JSON.parse(contractsFile.code)); }
+        catch { normalized = null; }
+      }
+      setStudioEndpoints(normalized);
+      if (!normalized) setStudioError("Generated an API, but couldn't find a readable endpoint list in the response — check the raw code in the Validations/User Interface tab.");
+    } catch (err) {
+      setStudioError(err.response?.data?.detail || "API generation failed");
+    } finally {
+      setStudioEndpointsLoading(false);
+    }
   };
 
   const handleFinalize = async () => {
@@ -301,13 +491,27 @@ export default function Dashboard() {
     setScreenApi(screen.api || "");
     setScreenTab(screen.html ? "html" : screen.xml ? "xml" : "html");
     setShowScreenCode(false);
+    setStudioPrimaryEntities(screen.primary_entities || (screen.primary_entity ? [screen.primary_entity] : []));
+    setStudioJoinedEntities(screen.joined_entities || []);
+    setScreenChat(screen.ui_chat || []);
+    setScreenChatInput("");
+    const contractsFile = parseFiles(screen.api || "").find(f => f.name.toLowerCase().includes("contract"));
+    let normalized = null;
+    if (contractsFile) {
+      try { normalized = normalizeEndpoints(JSON.parse(contractsFile.code)); } catch { normalized = null; }
+    }
+    setStudioEndpoints(normalized);
+    setStudioError("");
     setError("");
   };
 
   const handleNewScreen = () => {
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
-    setScreenTab("html"); setShowScreenCode(false); setError("");
+    setScreenTab("html"); setShowScreenCode(false);
+    setStudioPrimaryEntities([]); setStudioJoinedEntities([]); setStudioEndpoints(null); setStudioError("");
+    setScreenChat([]); setScreenChatInput("");
+    setError("");
   };
 
   const handleDeleteScreen = async (screenId) => {
@@ -429,21 +633,58 @@ export default function Dashboard() {
     if (!selectedProject?.entities) return null;
     try { return JSON.parse(selectedProject.entities); } catch { return null; }
   }, [selectedProject?.entities]);
+
+  // Field mapping only makes sense for a single-entity CRUD screen. Selecting more than one
+  // primary entity means this is a navigation/landing screen instead — no single row of data
+  // to map fields to, so there's nothing meaningful to show here.
+  const studioMappingRows = useMemo(() => {
+    if (!entities?.tables?.length || studioPrimaryEntities.length !== 1) return [];
+    const rows = [];
+    for (const tableName of [studioPrimaryEntities[0], ...studioJoinedEntities]) {
+      const table = entities.tables.find(t => t.name === tableName);
+      if (!table) continue;
+      for (const col of table.columns || []) {
+        const field = col.name.split("_").map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(" ");
+        rows.push({ field, path: `${tableName}.${col.name}` });
+      }
+    }
+    return rows;
+  }, [entities, studioPrimaryEntities, studioJoinedEntities]);
   const drafts = useMemo(() => projects.filter(p => p.status === "draft"), [projects]);
   const finalized = useMemo(() => projects.filter(p => p.status === "finalized"), [projects]);
   const tblCount = (p) => { try { return JSON.parse(p.entities)?.tables?.length || 0; } catch { return 0; } };
   const lang = selectedProject?.language || "Python";
   const fileExt = lang === "Python" ? "py" : lang === "Java" ? "java" : lang === "TypeScript" ? "ts" : "js";
 
+  // Defensive net: strip a leading/trailing markdown code fence if the model added one
+  // despite being told not to (e.g. ```json ... ``` or ```python ... ```).
+  const stripMdFence = (text) => {
+    const trimmed = text.trim();
+    const m = trimmed.match(/^```[a-zA-Z0-9]*\n?([\s\S]*?)\n?```$/);
+    return m ? m[1].trim() : trimmed;
+  };
+
   const parseFiles = (code) => {
     if (!code) return [];
     const parts = code.split(/^=== FILENAME:\s*(.+?)\s*===$/m);
-    if (parts.length <= 1) return [{ name: `code.${fileExt}`, code: code.trim() }];
+    if (parts.length <= 1) return [{ name: `code.${fileExt}`, code: stripMdFence(code) }];
     const files = [];
     for (let i = 1; i < parts.length; i += 2) {
-      if (parts[i] && parts[i + 1]?.trim()) files.push({ name: parts[i].trim(), code: parts[i + 1].trim() });
+      if (parts[i] && parts[i + 1]?.trim()) files.push({ name: parts[i].trim(), code: stripMdFence(parts[i + 1]) });
     }
-    return files.length > 0 ? files : [{ name: `code.${fileExt}`, code: code.trim() }];
+    return files.length > 0 ? files : [{ name: `code.${fileExt}`, code: stripMdFence(code) }];
+  };
+
+  // Splits the generate-api bundle (routes/models/contracts/api_service/page_component)
+  // into a backend-only bundle and a frontend-only bundle for separate display —
+  // api_contracts.json is excluded here since the REST Endpoints tab handles that.
+  const splitApiBundle = (code) => {
+    if (!code) return { backend: "", frontend: "" };
+    const files = parseFiles(code);
+    const rebuild = (list) => list.map(f => `=== FILENAME: ${f.name} ===\n${f.code}`).join("\n\n");
+    const backend = rebuild(files.filter(f => /^(routes|models)\b/i.test(f.name)));
+    const frontend = rebuild(files.filter(f => /^(api_service|page_component)\b/i.test(f.name)));
+    return { backend, frontend };
   };
 
   const syntaxLang = (filename) => {
@@ -465,7 +706,7 @@ export default function Dashboard() {
     {
       heading: "WORKSPACE",
       items: [
-        { key: "workbench", label: "Architect Workbench" },
+        { key: "workbench", label: "Schema→Screen Studio" },
         { key: "schema", label: "Database Schema" },
         { key: "validation", label: "Validation" },
         { key: "ui", label: "User Interface" },
@@ -495,12 +736,16 @@ export default function Dashboard() {
         <div style={S.overlay} onClick={() => setShowNewModal(false)}>
           <div className="card fade-in" style={S.modal} onClick={e => e.stopPropagation()}>
             <h3 style={S.modalH}>Create New Project</h3>
-            <p style={S.modalSub}>Give your project a name and choose a language</p>
+            <p style={S.modalSub}>Give your project a name and choose a backend and frontend language</p>
             <label style={S.lbl}>Project Name</label>
             <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="My awesome project" style={S.inp} autoFocus />
-            <label style={S.lbl}>Target Language</label>
+            <label style={S.lbl}>Backend Language</label>
             <select value={newLanguage} onChange={e => setNewLanguage(e.target.value)} style={S.sel}>
               {LANGUAGES.map(l => <option key={l}>{l}</option>)}
+            </select>
+            <label style={S.lbl}>Frontend Framework</label>
+            <select value={newFrontendLang} onChange={e => setNewFrontendLang(e.target.value)} style={S.sel}>
+              {FRONTEND_LANGUAGES.map(l => <option key={l}>{l}</option>)}
             </select>
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
               <button className="btn-primary" onClick={handleCreateProject} style={{ flex: 1, justifyContent: "center" }}>Create Project</button>
@@ -587,10 +832,17 @@ export default function Dashboard() {
           </h2>
           {selectedProject && <span style={S.badge}>{lang}</span>}
           {selectedProject?.github_repo_url && (
-            <a href={selectedProject.github_repo_url} target="_blank" rel="noreferrer"
+            <a href={selectedProject.github_repo_url} target="_blank" rel="noreferrer" title={selectedProject.github_repo}
               style={{ fontSize: 12, color: "#818cf8", textDecoration: "none", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", border: "1px solid #3c3c3c", borderRadius: 6, background: "#1e1e1e" }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-              {selectedProject.github_repo}
+              Backend
+            </a>
+          )}
+          {selectedProject?.github_frontend_repo_url && (
+            <a href={selectedProject.github_frontend_repo_url} target="_blank" rel="noreferrer" title={selectedProject.github_frontend_repo}
+              style={{ fontSize: 12, color: "#818cf8", textDecoration: "none", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", border: "1px solid #3c3c3c", borderRadius: 6, background: "#1e1e1e" }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              Frontend
             </a>
           )}
           {selectedProject && (
@@ -611,78 +863,571 @@ export default function Dashboard() {
           <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 13, padding: "8px 14px" }}>+ New</button>
         </header>
 
-        <div style={S.content}>
+        <div style={activeSection === "workbench" ? { ...S.content, background: "var(--st-bg)", display: "flex", flexDirection: "column" } : S.content}>
           {selectedProject ? (
-            <div className="fade-in" style={{ maxWidth: 820, paddingBottom: 80 }}>
+            <div className="fade-in" style={activeSection === "workbench"
+              ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }
+              : { maxWidth: 820, paddingBottom: 80 }}>
               {error && <div style={S.error}>{error}</div>}
 
-              {/* ARCHITECT WORKBENCH */}
+              {/* SCHEMA -> SCREEN STUDIO */}
               {activeSection === "workbench" && (
-                <div>
-                  <div style={{ marginBottom: 20 }}>
-                    <h3 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", margin: "0 0 4px" }}>Architect Workbench</h3>
-                    <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a", maxWidth: 620 }}>
-                      Describe the technical requirement in plain language. It will be translated into database schema changes, UI screens, and business rules — refine it below, then generate everything in one go.
-                    </p>
+                <div className="studio-root" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, background: "var(--st-bg)", margin: "-28px -36px", overflow: "hidden" }}>
+                  {/* TOP BAR */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "13px 24px", background: "var(--st-surface)", borderBottom: "1px solid var(--st-border)", flexShrink: 0 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: 8, background: "var(--st-accent)", flexShrink: 0 }} />
+                    <span style={{ fontWeight: 700, fontSize: 15 }}>Schema→Screen Studio</span>
+                    <span style={{ color: "#d8d4e6" }}>|</span>
+                    <span style={{ fontSize: 13, color: "var(--st-muted)" }}>{selectedProject.name}</span>
+                    <span style={{ fontSize: 13, color: "var(--st-muted)" }}>/</span>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{screenName || "New Screen"}</span>
+                    <div style={{ flex: 1 }} />
+                    {studioGenerating && studioStep && (
+                      <span style={{ fontSize: 12, color: "var(--st-muted)" }}>{studioStep}</span>
+                    )}
+                    <span className="studio-pill studio-pill-success">
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--st-success)", display: "inline-block" }} />
+                      {selectedProject.language} · {selectedProject.status}
+                    </span>
+                    <button className="studio-btn-secondary" disabled={studioShowMiddle && !studioShowPreview}
+                      onClick={() => setStudioShowMiddle(s => !s)}
+                      title={studioShowMiddle ? "Hide the definition panel to see the preview full-screen" : "Show the definition panel"}>
+                      {studioShowMiddle ? "Hide panel »" : "« Show panel"}
+                    </button>
+                    <button className="studio-btn-secondary" disabled={studioShowPreview && !studioShowMiddle}
+                      onClick={() => setStudioShowPreview(s => !s)}
+                      title={studioShowPreview ? "Hide the live preview" : "Show the live preview"}>
+                      {studioShowPreview ? "Hide preview" : "Show preview"}
+                    </button>
+                    <button className="studio-btn-primary" onClick={handleStudioGenerate} disabled={studioGenerating}>
+                      {studioGenerating ? <><span className="spinner" /> Generating...</> : "Generate Screen"}
+                    </button>
                   </div>
 
-                  <div className="card" style={{ padding: 20 }}>
-                    <label style={S.lbl}>Technical Requirement</label>
-                    <textarea
-                      value={workbenchRequirement}
-                      onChange={e => setWorkbenchRequirement(e.target.value)}
-                      placeholder="e.g. Customers should be able to save multiple shipping addresses. The checkout screen needs an address dropdown, and orders over $500 require manager approval."
-                      style={S.ta}
-                      rows={6}
-                    />
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
-                      <button className="btn-primary" onClick={() => handleWorkbenchInterpret(false)} disabled={workbenchLoading || !workbenchRequirement.trim()} style={{ opacity: (workbenchLoading || !workbenchRequirement.trim()) ? 0.6 : 1 }}>
-                        {workbenchLoading ? <><span className="spinner" /> Analyzing...</> : "Show me what you understood"}
-                      </button>
-                      {workbenchError && <span style={{ fontSize: 12.5, color: "#ef4444" }}>{workbenchError}</span>}
+                  <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+                    {/* LEFT SIDEBAR */}
+                    <div style={{ width: 210, flexShrink: 0, background: "var(--st-surface)", borderRight: "1px solid var(--st-border)", padding: "16px 10px", overflowY: "auto" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px", marginBottom: 6 }}>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--st-muted)", letterSpacing: 0.6 }}>IMPORTED SCHEMA</span>
+                        <button onClick={() => setShowNewEntityModal(true)} title="New entity from prompt" style={{ background: "none", border: "none", color: "var(--st-accent)", cursor: "pointer", fontSize: 16, fontWeight: 700, lineHeight: 1 }}>+</button>
+                      </div>
+                      {(entities?.tables || []).map(t => (
+                        <div key={t.name} onClick={() => openSchemaAssistant(t.name)} title="Open Schema Assistant"
+                          className="studio-sidebar-item" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>• {t.name}</span>
+                          <span style={{ fontSize: 11, color: "var(--st-muted)" }}>{t.columns?.length || 0}</span>
+                        </div>
+                      ))}
+                      {!entities?.tables?.length && <div style={{ fontSize: 12, color: "var(--st-muted)", padding: "4px 8px" }}>No entities yet</div>}
+                      <div onClick={() => setShowNewEntityModal(true)} className="studio-sidebar-item" style={{ color: "var(--st-accent)", fontWeight: 600 }}>+ New entity from prompt</div>
+
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--st-muted)", letterSpacing: 0.6, margin: "18px 0 6px", padding: "0 8px" }}>SCREENS</div>
+                      {screens.map(s => (
+                        <div key={s.id} className={"studio-sidebar-item" + (activeScreenId === s.id ? " active" : "")} onClick={() => handleSelectScreen(s)}
+                          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          ▪ {s.name}
+                        </div>
+                      ))}
+                      <div onClick={handleNewScreen} className="studio-sidebar-item" style={{ color: "var(--st-muted)" }}>+ New Screen</div>
                     </div>
-                  </div>
 
-                  {!workbenchChanges && !workbenchLoading && (
-                    <p style={{ marginTop: 28, fontSize: 12, color: "#5a5a5a", textAlign: "center" }}>— the interpretation will appear below —</p>
-                  )}
+                    {/* MIDDLE PANEL */}
+                    {studioShowMiddle && (
+                    <div style={{ width: 340, flexShrink: 0, borderRight: "1px solid var(--st-border)", padding: 16, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+                      <div className="studio-card" style={{ padding: 16 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Screen Definition</div>
+                        <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--st-muted)", display: "block", marginBottom: 4 }}>Screen name</label>
+                        <input className="studio-input" value={screenName} onChange={e => setScreenName(e.target.value)} placeholder="Employee Directory" style={{ marginBottom: 12 }} />
 
-                  {workbenchChanges && (
-                    <>
-                      <WorkbenchGrid index="01" title="DB Schema changes" badgeCol="action_type" groupCol="entity_name"
-                        columns={[{ key: "entity_name", label: "Entity name" }, { key: "column_name", label: "Column name" }, { key: "action_type", label: "Action type" }]}
-                        rows={workbenchChanges.db_schema_changes || []} emptyHint="No database schema changes identified in this requirement." />
-                      <WorkbenchGrid index="02" title="Table Catalog"
-                        columns={[{ key: "entity_name", label: "Entity name" }, { key: "description", label: "One-line description (used for query routing)" }]}
-                        rows={workbenchChanges.table_catalog || []} emptyHint="No tables identified in this requirement." />
-                      <WorkbenchGrid index="03" title="UI Screens" groupCol="screen_name"
-                        columns={[{ key: "screen_name", label: "Screen name" }, { key: "ui_field_name", label: "UI field name" }, { key: "action", label: "Action" }]}
-                        rows={workbenchChanges.ui_screens || []} emptyHint="No UI screen changes identified in this requirement." />
-                      <WorkbenchGrid index="04" title="Business Rules" badgeCol="action"
-                        columns={[{ key: "rule_name", label: "Rule name" }, { key: "rule_description", label: "Rule description" }, { key: "action", label: "Action" }]}
-                        rows={workbenchChanges.business_rules || []} emptyHint="No business rules identified in this requirement." />
+                        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+                          <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--st-muted)" }}>Primary entities</label>
+                          {(entities?.tables?.length || 0) > 1 && (
+                            <span onClick={() => setStudioPrimaryEntities((entities?.tables || []).map(t => t.name))}
+                              style={{ fontSize: 11, color: "var(--st-accent)", cursor: "pointer", fontWeight: 600 }}>
+                              Select all (landing page)
+                            </span>
+                          )}
+                        </div>
+                        <p style={{ fontSize: 11, color: "var(--st-muted)", margin: "0 0 8px" }}>
+                          Pick one for a normal data screen. Pick several — or "Select all" — to make this a
+                          navigation/landing page that routes to the screens covering those entities.
+                        </p>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                          {(entities?.tables || []).map(t => {
+                            const active = studioPrimaryEntities.includes(t.name);
+                            return (
+                              <span key={t.name}
+                                onClick={() => setStudioPrimaryEntities(p => active ? p.filter(x => x !== t.name) : [...p, t.name])}
+                                className={"studio-pill" + (active ? " studio-pill-soft" : "")}
+                                style={{ cursor: "pointer", border: active ? "none" : "1px solid var(--st-border)", color: active ? undefined : "var(--st-muted)" }}>
+                                {t.name}
+                              </span>
+                            );
+                          })}
+                          {!entities?.tables?.length && <span style={{ fontSize: 12, color: "var(--st-muted)" }}>No entities yet</span>}
+                        </div>
+                        {studioPrimaryEntities.length > 1 && (
+                          <div className="studio-pill studio-pill-soft" style={{ marginBottom: 12, display: "inline-flex" }}>
+                            Navigation hub — routes to {studioPrimaryEntities.length} screens
+                          </div>
+                        )}
 
-                      <div className="card" style={{ padding: 20, marginTop: 24 }}>
-                        <label style={S.lbl}>Anything to change?</label>
-                        <textarea
-                          value={workbenchFollowUp}
-                          onChange={e => setWorkbenchFollowUp(e.target.value)}
-                          placeholder="e.g. Actually make the approval threshold $1000, and add a phone number field to the address form."
-                          style={S.ta}
-                          rows={3}
-                        />
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12, flexWrap: "wrap" }}>
-                          <button className="btn-secondary" onClick={() => handleWorkbenchInterpret(true)} disabled={workbenchLoading || !workbenchFollowUp.trim()} style={{ opacity: (workbenchLoading || !workbenchFollowUp.trim()) ? 0.6 : 1 }}>
-                            {workbenchLoading ? <><span className="spinner" /> Updating...</> : "Update interpretation"}
-                          </button>
-                          <button className="btn-primary" onClick={handleWorkbenchConfirm} disabled={workbenchConfirming || workbenchLoading} style={{ opacity: workbenchConfirming ? 0.6 : 1 }}>
-                            {workbenchConfirming ? <><span className="spinner" /> Generating schema, screens & validation...</> : "Yes, continue — generate everything"}
-                          </button>
-                          <button className="btn-secondary" onClick={handleWorkbenchDiscard} disabled={workbenchLoading || workbenchConfirming} style={{ marginLeft: "auto" }}>Discard</button>
+                        <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--st-muted)", display: "block", marginBottom: 6 }}>Joined entities</label>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                          {(entities?.tables || []).filter(t => !studioPrimaryEntities.includes(t.name)).map(t => {
+                            const active = studioJoinedEntities.includes(t.name);
+                            return (
+                              <span key={t.name} onClick={() => setStudioJoinedEntities(j => active ? j.filter(x => x !== t.name) : [...j, t.name])}
+                                className={"studio-pill" + (active ? " studio-pill-soft" : "")}
+                                style={{ cursor: "pointer", border: active ? "none" : "1px solid var(--st-border)", color: active ? undefined : "var(--st-muted)" }}>
+                                {t.name}
+                              </span>
+                            );
+                          })}
+                          {(entities?.tables || []).length <= 1 && <span style={{ fontSize: 12, color: "var(--st-muted)" }}>No other entities to join</span>}
                         </div>
                       </div>
-                    </>
+
+                      <div className="studio-card" style={{ padding: 16 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Describe the UI</div>
+                        <textarea className="studio-textarea" rows={5} value={screenDesc} onChange={e => setScreenDesc(e.target.value)}
+                          placeholder="A searchable, filterable directory. Show name, email, department... Include filters and an 'Add' action." />
+
+                        {screenXml && (
+                          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--st-border)" }}>
+                            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Refine with chat</div>
+                            {screenChat.length > 0 && (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 220, overflowY: "auto", marginBottom: 10 }}>
+                                {screenChat.map((m, i) => (
+                                  <div key={i} style={{
+                                    alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                                    background: m.role === "user" ? "var(--st-accent-soft)" : "var(--st-bg)",
+                                    border: "1px solid var(--st-border)", borderRadius: 10, padding: "6px 10px",
+                                    fontSize: 12.5, maxWidth: "90%",
+                                  }}>
+                                    {m.text}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                              <textarea ref={screenChatInputRef} className="studio-input studio-input-autosize" value={screenChatInput}
+                                rows={1}
+                                onChange={e => setScreenChatInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !screenChatSending) { e.preventDefault(); handleSendUiChat(); } }}
+                                placeholder="e.g. add a status filter, make the save button blue... (Shift+Enter for a new line)"
+                                disabled={screenChatSending} style={{ flex: 1, resize: "none", overflow: "hidden", lineHeight: 1.4 }} />
+                              <button className="studio-btn-secondary" onClick={handleSendUiChat}
+                                disabled={screenChatSending || !screenChatInput.trim()}>
+                                {screenChatSending ? <span className="spinner" /> : "Send"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="studio-card" style={{ padding: 16 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Field → Column Mapping</div>
+                        {studioPrimaryEntities.length > 1 ? (
+                          <div style={{ fontSize: 12.5, color: "var(--st-muted)" }}>This is a navigation screen, not a data screen — no fields to map.</div>
+                        ) : studioMappingRows.length === 0 ? (
+                          <div style={{ fontSize: 12.5, color: "var(--st-muted)" }}>Pick a primary entity to see the field mapping.</div>
+                        ) : (
+                          <div style={{ display: "flex", flexDirection: "column", maxHeight: 260, overflowY: "auto" }}>
+                            {studioMappingRows.map((r, i) => (
+                              <div key={i} style={{ padding: "7px 0", borderBottom: i < studioMappingRows.length - 1 ? "1px solid var(--st-border)" : "none" }}>
+                                <div style={{ fontWeight: 600, fontSize: 12.5 }}>{r.field}</div>
+                                <div style={{ color: "var(--st-accent)", fontFamily: "ui-monospace, monospace", fontSize: 11.5, marginTop: 2, wordBreak: "break-all" }}>→ {r.path}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {studioError && <div style={{ fontSize: 12.5, color: "var(--st-danger)" }}>{studioError}</div>}
+                    </div>
+                    )}
+
+                    {/* RIGHT WORKSPACE */}
+                    {studioShowPreview && (
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: "var(--st-surface)" }}>
+                      <div style={{ display: "flex", gap: 22, padding: "0 20px", borderBottom: "1px solid var(--st-border)", flexShrink: 0 }}>
+                        {[
+                          { key: "preview", label: "UI Preview" },
+                          { key: "frontend", label: "Frontend Code" },
+                          { key: "backend", label: "Backend Code" },
+                          { key: "endpoints", label: "REST Endpoints" },
+                          { key: "entities", label: "Database Entities" },
+                          { key: "validations", label: "Validations" },
+                        ].map(t => (
+                          <button key={t.key} className={"studio-tab" + (studioTab === t.key ? " active" : "")}
+                            onClick={() => { setStudioTab(t.key); if (t.key === "endpoints" && !screenApi && screenXml) handleLoadEndpoints(); }}>
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
+                        {studioTab === "preview" && (
+                          screenHtml ? (
+                            <iframe key={`${activeScreenId}-${screenHtml.length}`} srcDoc={screenHtml}
+                              style={{ width: "100%", height: "100%", minHeight: 480, border: "1px solid var(--st-border)", borderRadius: 8 }}
+                              title="UI Preview" sandbox="allow-scripts" />
+                          ) : (
+                            <div style={{ textAlign: "center", color: "var(--st-muted)", fontSize: 13, padding: 60 }}>
+                              {studioGenerating ? "Generating..." : 'Define a screen on the left and click "Generate Screen" to see a live preview here.'}
+                            </div>
+                          )
+                        )}
+
+                        {studioTab === "frontend" && (
+                          splitApiBundle(screenApi).frontend ? (
+                            <MultiFileCode title={`Frontend Code (${frontendLang})`} code={splitApiBundle(screenApi).frontend} parseFiles={parseFiles} syntaxLang={syntaxLang} downloadCode={downloadCode} />
+                          ) : (
+                            <div style={{ color: "var(--st-muted)", fontSize: 13 }}>
+                              {studioGenerating ? (studioStep || "Generating...") : screenXml ? 'Frontend code isn\'t generated yet — click "Generate Screen" to build it.' : "Generate a screen first."}
+                            </div>
+                          )
+                        )}
+
+                        {studioTab === "backend" && (
+                          splitApiBundle(screenApi).backend ? (
+                            <MultiFileCode title={`Backend Code (${selectedProject.language})`} code={splitApiBundle(screenApi).backend} parseFiles={parseFiles} syntaxLang={syntaxLang} downloadCode={downloadCode} />
+                          ) : (
+                            <div style={{ color: "var(--st-muted)", fontSize: 13 }}>
+                              {studioGenerating ? (studioStep || "Generating...") : screenXml ? 'Backend code isn\'t generated yet — click "Generate Screen" to build it.' : "Generate a screen first."}
+                            </div>
+                          )
+                        )}
+
+                        {studioTab === "endpoints" && (
+                          studioEndpointsLoading ? <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Generating endpoints...</div> :
+                          !screenXml ? <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Generate a screen first.</div> :
+                          !studioEndpoints ? (
+                            <button className="studio-btn-secondary" onClick={handleLoadEndpoints}>Generate REST API</button>
+                          ) : (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                              <div style={{ fontSize: 12, color: "var(--st-muted)", marginBottom: 4 }}>{studioEndpoints.length} endpoint{studioEndpoints.length !== 1 ? "s" : ""}</div>
+                              {studioEndpoints.map((ep, i) => (
+                                <div key={i} className="studio-card" style={{ padding: 12, display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
+                                  <span className="studio-pill studio-pill-soft" style={{ fontFamily: "ui-monospace, monospace" }}>{ep.method}</span>
+                                  <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 13 }}>{ep.path}</span>
+                                  <span style={{ fontSize: 12.5, color: "var(--st-muted)" }}>{ep.description}</span>
+                                  {ep.trigger && <span style={{ fontSize: 11, color: "var(--st-muted)", marginLeft: "auto" }}>via {ep.trigger}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          )
+                        )}
+
+                        {studioTab === "entities" && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                            {(entities?.tables || []).map(t => (
+                              <div key={t.name} className="studio-card" style={{ overflow: "hidden" }}>
+                                <div style={{ padding: "10px 14px", fontWeight: 700, fontSize: 13.5, borderBottom: "1px solid var(--st-border)", background: "#faf9fc" }}>{t.name}</div>
+                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                                  <thead><tr style={{ color: "var(--st-muted)" }}>
+                                    <th style={{ textAlign: "left", padding: "6px 14px" }}>Column</th>
+                                    <th style={{ textAlign: "left", padding: "6px 14px" }}>Type</th>
+                                    <th style={{ textAlign: "left", padding: "6px 14px" }}>Key</th>
+                                  </tr></thead>
+                                  <tbody>
+                                    {(t.columns || []).map(c => (
+                                      <tr key={c.name} style={{ borderTop: "1px solid var(--st-border)" }}>
+                                        <td style={{ padding: "6px 14px" }}>{c.name}</td>
+                                        <td style={{ padding: "6px 14px", color: "var(--st-muted)" }}>{c.type}</td>
+                                        <td style={{ padding: "6px 14px" }}>
+                                          {c.pk ? <span className="studio-pill studio-pill-soft">PK</span> : c.fk ? <span className="studio-pill" style={{ background: "#fef3c7", color: "#92400e" }}>FK</span> : ""}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ))}
+                            {!entities?.tables?.length && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No entities yet — add one from the sidebar.</div>}
+                          </div>
+                        )}
+
+                        {studioTab === "validations" && (
+                          <div>
+                            {validationRules ? (
+                              <div className="studio-card" style={{ padding: 16, marginBottom: 16, whiteSpace: "pre-wrap", fontSize: 13 }}>{validationRules}</div>
+                            ) : (
+                              <div style={{ color: "var(--st-muted)", fontSize: 13, marginBottom: 16 }}>No validation rules yet.</div>
+                            )}
+                            {validationCode && (
+                              <SyntaxHighlighter language={syntaxLang(parseFiles(validationCode)[0]?.name || "")} style={oneDark} customStyle={{ borderRadius: 8, fontSize: 12.5 }}>
+                                {validationCode}
+                              </SyntaxHighlighter>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    )}
+                  </div>
+
+                  {/* New entity from prompt modal */}
+                  {showNewEntityModal && (
+                    <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,46,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+                      onClick={() => setShowNewEntityModal(false)}>
+                      <div className="studio-card" onClick={e => e.stopPropagation()} style={{ padding: 24, width: 460 }}>
+                        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>New entity from prompt</div>
+                        <p style={{ fontSize: 12.5, color: "var(--st-muted)", margin: "0 0 14px" }}>Describe the entity in plain language.</p>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                          {["Time-off requests", "Performance reviews"].map(chip => (
+                            <span key={chip} onClick={() => setNewEntityPrompt(chip)} className="studio-pill" style={{ cursor: "pointer", border: "1px solid var(--st-border)", color: "var(--st-muted)" }}>{chip}</span>
+                          ))}
+                        </div>
+                        <textarea className="studio-textarea" rows={4} value={newEntityPrompt} onChange={e => setNewEntityPrompt(e.target.value)}
+                          placeholder="e.g. Track employee time-off requests with start date, end date, type, and approval status." style={{ marginBottom: 12 }} />
+                        {newEntityError && <div style={{ fontSize: 12.5, color: "var(--st-danger)", marginBottom: 10 }}>{newEntityError}</div>}
+                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                          <button className="studio-btn-secondary" onClick={() => setShowNewEntityModal(false)}>Cancel</button>
+                          <button className="studio-btn-primary" onClick={handleGenerateNewEntity} disabled={newEntityGenerating || !newEntityPrompt.trim()}>
+                            {newEntityGenerating ? <><span className="spinner" /> Generating...</> : "Generate schema"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   )}
+
+                  {/* Schema Assistant — per-table chat + tabbed detail editor */}
+                  {schemaAssistantTable && (() => {
+                    const table = (entities?.tables || []).find(t => t.name === schemaAssistantTable) || { name: schemaAssistantTable, columns: [] };
+                    const cols = table.columns || [];
+                    const fkCols = cols.filter(c => c.fk);
+                    const validations = table.validations || [];
+                    const autoCols = cols.filter(c => c.autonumber);
+                    const defaultCols = cols.filter(c => c.default !== null && c.default !== undefined && c.default !== "");
+                    const formatAutonumber = (a) => {
+                      if (!a) return "";
+                      const width = a.leading_zeroes || 4;
+                      const sample = String(a.start_number ?? 1).padStart(width, "0");
+                      const resetLabel = { never: "never resets", on_stop: `cycles at ${a.stop_number}`, yearly: "resets yearly", monthly: "resets monthly", daily: "resets daily", field_based: `resets per ${a.reset?.field || "field"}` }[a.reset?.type] || "never resets";
+                      return `${a.prefix || ""}${sample}${a.suffix || ""} · ${resetLabel}`;
+                    };
+                    const columnIcon = (c) => {
+                      if (c.pk) return "🔑";
+                      if (c.fk) return "→";
+                      if (c.autonumber) return "#";
+                      const t = (c.type || "").toUpperCase();
+                      if (t.includes("BOOL")) return "⊙";
+                      if (t.includes("NUMERIC") || t.includes("DECIMAL") || t.includes("MONEY")) return "$";
+                      if (t.includes("TIMESTAMP") || t.includes("DATE")) return "⏱";
+                      return "T";
+                    };
+                    const tabs = [
+                      { key: "schema", label: "Schema", count: cols.length },
+                      { key: "fk", label: "Foreign Keys", count: fkCols.length },
+                      { key: "validations", label: "Validations", count: validations.length },
+                      { key: "autonumber", label: "Auto-number", count: autoCols.length },
+                      { key: "defaults", label: "Defaults", count: defaultCols.length },
+                    ];
+                    return (
+                      <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+                        onClick={closeSchemaAssistant}>
+                        <div onClick={e => e.stopPropagation()} style={{ width: "90vw", maxWidth: 1300, height: "85vh", background: "var(--st-bg)", borderRadius: 14, overflow: "hidden", display: "flex", boxShadow: "0 24px 70px rgba(0,0,0,0.35)" }}>
+                          {/* LEFT: chat */}
+                          <div style={{ width: 340, flexShrink: 0, background: "var(--st-surface)", borderRight: "1px solid var(--st-border)", display: "flex", flexDirection: "column" }}>
+                            <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--st-border)", display: "flex", alignItems: "center", gap: 10 }}>
+                              <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--st-accent)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>◆</div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 700, fontSize: 13.5 }}>Schema Assistant</div>
+                                <div style={{ fontSize: 11.5, color: "var(--st-muted)" }}>Editing · {table.name}</div>
+                              </div>
+                              <span style={{ fontSize: 11, color: "var(--st-success)", display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--st-success)", display: "inline-block" }} /> online
+                              </span>
+                              <button onClick={closeSchemaAssistant} title="Close" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "var(--st-muted)", padding: 0, marginLeft: 4 }}>✕</button>
+                            </div>
+
+                            <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                              {schemaAssistantChat.map((m, i) => (
+                                <div key={i} style={{
+                                  alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                                  background: m.role === "user" ? "var(--st-accent)" : m.role === "note" ? (m.blocking ? "#fef2f2" : "#fffbeb") : "var(--st-bg)",
+                                  color: m.role === "user" ? "white" : m.role === "note" ? (m.blocking ? "#991b1b" : "#92400e") : "var(--st-text)",
+                                  border: m.role === "user" ? "none" : m.role === "note" ? `1px solid ${m.blocking ? "#fecaca" : "#fde68a"}` : "1px solid var(--st-border)",
+                                  borderRadius: 12, padding: "9px 13px", fontSize: m.role === "note" ? 12 : 13, lineHeight: 1.5, maxWidth: "88%",
+                                }}>
+                                  {m.text}
+                                </div>
+                              ))}
+                              {schemaAssistantSending && (
+                                <div style={{ alignSelf: "flex-start", color: "var(--st-muted)", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6 }}>
+                                  <span className="spinner" /> thinking...
+                                </div>
+                              )}
+                            </div>
+
+                            {schemaAssistantSuggestions.length > 0 && (
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 16px 12px" }}>
+                                {schemaAssistantSuggestions.map(s => (
+                                  <span key={s} onClick={() => handleSchemaAssistantSend(s)}
+                                    className="studio-pill" style={{ cursor: "pointer", border: "1px solid var(--st-border)", color: "var(--st-muted)", fontSize: 11.5 }}>
+                                    {s}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            <div style={{ padding: 14, borderTop: "1px solid var(--st-border)", display: "flex", gap: 8, alignItems: "flex-end" }}>
+                              <textarea ref={schemaAssistantInputRef} className="studio-input" rows={1} value={schemaAssistantInput}
+                                onChange={e => setSchemaAssistantInput(e.target.value)}
+                                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !schemaAssistantSending) { e.preventDefault(); handleSchemaAssistantSend(); } }}
+                                placeholder="e.g. add a manager_id foreign key and turn on auditing... (Shift+Enter for a new line)"
+                                disabled={schemaAssistantSending}
+                                style={{ flex: 1, resize: "none", overflow: "hidden", lineHeight: 1.4 }} />
+                              <button className="studio-btn-secondary" onClick={() => handleSchemaAssistantSend()} disabled={schemaAssistantSending || !schemaAssistantInput.trim()}>
+                                {schemaAssistantSending ? <span className="spinner" /> : "Send"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* RIGHT: table detail */}
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: "var(--st-surface)" }}>
+                            <div style={{ padding: "18px 24px", borderBottom: "1px solid var(--st-border)", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
+                              <div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                  <span style={{ fontSize: 20, fontWeight: 700 }}>{table.name}</span>
+                                  <span className="studio-pill studio-pill-soft" style={{ fontSize: 10.5, fontWeight: 700 }}>TABLE</span>
+                                </div>
+                                <div style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 3 }}>
+                                  {table.description || "No description yet"} · {cols.length} columns · public schema
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                                <button className="studio-btn-secondary" style={{ fontSize: 12 }} onClick={() => handleDownload("sql")} title="Download the whole project's schema as SQL">Download SQL</button>
+                                <button className="studio-btn-secondary" style={{ fontSize: 12 }} onClick={() => handleDownload("json")} title="Download the whole project's schema as JSON">Download JSON</button>
+                              </div>
+                            </div>
+                            <div style={{ display: "flex", gap: 22, padding: "0 24px", borderBottom: "1px solid var(--st-border)", flexShrink: 0 }}>
+                              {tabs.map(t => (
+                                <button key={t.key} className={"studio-tab" + (schemaAssistantTab === t.key ? " active" : "")} onClick={() => setSchemaAssistantTab(t.key)}>
+                                  {t.label} {t.count > 0 && <span style={{ opacity: 0.6 }}>{t.count}</span>}
+                                </button>
+                              ))}
+                            </div>
+
+                            <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
+                              {schemaAssistantTab === "schema" && (
+                                <>
+                                  <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+                                    <div onClick={() => handleSchemaAssistantSend(table.audit_enabled ? "Turn off auditing" : "Turn on auditing (track created_by / modified_by and timestamps)")}
+                                      className="studio-card" style={{ flex: 1, padding: 14, display: "flex", gap: 10, cursor: "pointer", alignItems: "flex-start" }}>
+                                      <div style={{ width: 18, height: 18, borderRadius: 5, border: "1.5px solid var(--st-border)", background: table.audit_enabled ? "var(--st-accent)" : "transparent", color: "white", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, marginTop: 1 }}>
+                                        {table.audit_enabled ? "✓" : ""}
+                                      </div>
+                                      <div>
+                                        <div style={{ fontWeight: 700, fontSize: 13 }}>Auditing</div>
+                                        <div style={{ fontSize: 11.5, color: "var(--st-muted)" }}>Track created_by / modified_by + timestamps</div>
+                                      </div>
+                                    </div>
+                                    <div onClick={() => handleSchemaAssistantSend(table.history_enabled ? "Turn off history tracking" : "Keep a full row-version change history")}
+                                      className="studio-card" style={{ flex: 1, padding: 14, display: "flex", gap: 10, cursor: "pointer", alignItems: "flex-start" }}>
+                                      <div style={{ width: 18, height: 18, borderRadius: 5, border: "1.5px solid var(--st-border)", background: table.history_enabled ? "var(--st-accent)" : "transparent", color: "white", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, marginTop: 1 }}>
+                                        {table.history_enabled ? "✓" : ""}
+                                      </div>
+                                      <div>
+                                        <div style={{ fontWeight: 700, fontSize: 13 }}>History</div>
+                                        <div style={{ fontSize: 11.5, color: "var(--st-muted)" }}>Keep full row-version change log</div>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                                    <thead><tr style={{ color: "var(--st-muted)" }}>
+                                      <th style={{ textAlign: "left", padding: "6px 10px" }}>Column</th>
+                                      <th style={{ textAlign: "left", padding: "6px 10px" }}>Type</th>
+                                      <th style={{ textAlign: "left", padding: "6px 10px" }}>Null</th>
+                                      <th style={{ textAlign: "left", padding: "6px 10px" }}>Key</th>
+                                      <th style={{ textAlign: "left", padding: "6px 10px" }}>Default</th>
+                                    </tr></thead>
+                                    <tbody>
+                                      {cols.map(c => (
+                                        <tr key={c.name} style={{ borderTop: "1px solid var(--st-border)" }}>
+                                          <td style={{ padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                                            <span style={{ opacity: 0.7, width: 14, display: "inline-block", textAlign: "center" }}>{columnIcon(c)}</span>{c.name}
+                                          </td>
+                                          <td style={{ padding: "8px 10px", color: "var(--st-muted)", fontFamily: "ui-monospace, monospace" }}>{c.type}</td>
+                                          <td style={{ padding: "8px 10px", color: "var(--st-muted)" }}>{c.pk ? "NO" : c.nullable === false ? "NO" : "YES"}</td>
+                                          <td style={{ padding: "8px 10px" }}>
+                                            {c.pk ? <span className="studio-pill studio-pill-soft" style={{ fontSize: 10.5 }}>PK</span>
+                                              : c.fk ? <span className="studio-pill" style={{ fontSize: 10.5, background: "#dbeafe", color: "#1d4ed8" }}>FK</span> : ""}
+                                          </td>
+                                          <td style={{ padding: "8px 10px", color: "var(--st-muted)", fontFamily: "ui-monospace, monospace" }}>{c.default ?? "—"}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                  <button className="studio-btn-secondary" style={{ marginTop: 16 }}
+                                    onClick={() => { setSchemaAssistantInput("Add a column named "); schemaAssistantInputRef.current?.focus(); }}>
+                                    + Add column
+                                  </button>
+                                </>
+                              )}
+
+                              {schemaAssistantTab === "fk" && (
+                                fkCols.length === 0 ? <div style={{ fontSize: 13, color: "var(--st-muted)" }}>No foreign keys yet — ask the assistant to add one.</div> : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {fkCols.map(c => (
+                                      <div key={c.name} className="studio-card" style={{ padding: 12, display: "flex", gap: 12, alignItems: "center" }}>
+                                        <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</span>
+                                        <span style={{ color: "var(--st-muted)" }}>→</span>
+                                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, color: "var(--st-accent)" }}>{c.fk}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )
+                              )}
+
+                              {schemaAssistantTab === "validations" && (
+                                validations.length === 0 ? <div style={{ fontSize: 13, color: "var(--st-muted)" }}>No validation rules yet — ask the assistant to add one.</div> : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {validations.map((v, i) => (
+                                      <div key={i} className="studio-card" style={{ padding: 12, display: "flex", gap: 12, alignItems: "center" }}>
+                                        <span style={{ fontWeight: 600, fontSize: 13 }}>{v.column}</span>
+                                        <span className="studio-pill studio-pill-soft" style={{ fontSize: 10.5 }}>{v.type}</span>
+                                        {v.detail && <span style={{ fontSize: 12, color: "var(--st-muted)" }}>{v.detail}</span>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )
+                              )}
+
+                              {schemaAssistantTab === "autonumber" && (
+                                autoCols.length === 0 ? <div style={{ fontSize: 13, color: "var(--st-muted)" }}>No auto-numbered columns — ask the assistant to configure one, e.g. "auto-number the {table.name.toLowerCase()}_code".</div> : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {autoCols.map(c => (
+                                      <div key={c.name} className="studio-card" style={{ padding: 12, display: "flex", gap: 12, alignItems: "center" }}>
+                                        <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</span>
+                                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, color: "var(--st-muted)" }}>{formatAutonumber(c.autonumber)}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )
+                              )}
+
+                              {schemaAssistantTab === "defaults" && (
+                                defaultCols.length === 0 ? <div style={{ fontSize: 13, color: "var(--st-muted)" }}>No default values set yet.</div> : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                    {defaultCols.map(c => (
+                                      <div key={c.name} className="studio-card" style={{ padding: 12, display: "flex", gap: 12, alignItems: "center" }}>
+                                        <span style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</span>
+                                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, color: "var(--st-accent)" }}>{c.default}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -714,13 +1459,31 @@ export default function Dashboard() {
                         <TreeView entities={entities} expanded={expandedTables} toggle={toggle} />
                       </div>
 
-                      {selectedProject.status === "finalized" && (
-                        <div style={{ marginTop: 16, padding: 16, background: "rgba(34,197,94,0.1)", borderRadius: 10, border: "1px solid rgba(34,197,94,0.35)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                          <span style={{ color: "#22c55e", fontWeight: 600, flex: 1 }}>Schema finalized</span>
-                          <button className="btn-primary" onClick={() => handleDownload("sql")} style={{ fontSize: 13, padding: "8px 16px" }}>Download SQL</button>
-                          <button className="btn-purple" onClick={() => handleDownload("json")} style={{ fontSize: 13, padding: "8px 16px" }}>Download JSON</button>
+                      {schemaUnresolved.length > 0 && (
+                        <div className="card" style={{ padding: 16, marginTop: 16, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)" }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8, color: "#d97706" }}>Worth a look</div>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {schemaUnresolved.map((u, i) => (
+                              <div key={i} style={{ fontSize: 12.5, color: "#b4b4b4", display: "flex", gap: 6 }}>
+                                <span>{u.blocking ? "⚠" : "ℹ"}</span>
+                                <span>{u.entity ? `[${u.entity}${u.column ? "." + u.column : ""}] ` : ""}{u.question}</span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
+
+                      <div style={{
+                        marginTop: 16, padding: 16, borderRadius: 10, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                        background: selectedProject.status === "finalized" ? "rgba(34,197,94,0.1)" : "rgba(255,255,255,0.03)",
+                        border: selectedProject.status === "finalized" ? "1px solid rgba(34,197,94,0.35)" : "1px solid #3c3c3c",
+                      }}>
+                        <span style={{ color: selectedProject.status === "finalized" ? "#22c55e" : "#7a7a7a", fontWeight: 600, flex: 1 }}>
+                          {selectedProject.status === "finalized" ? "Schema finalized" : "Draft — download anytime to check the schema before finalizing"}
+                        </span>
+                        <button className="btn-primary" onClick={() => handleDownload("sql")} style={{ fontSize: 13, padding: "8px 16px" }}>Download SQL</button>
+                        <button className="btn-purple" onClick={() => handleDownload("json")} style={{ fontSize: 13, padding: "8px 16px" }}>Download JSON</button>
+                      </div>
 
                       <div className="card" style={{ padding: 20, marginTop: 16 }}>
                         <label style={S.lbl}>Refine Architecture</label>
@@ -1085,13 +1848,12 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {/* Save FAB */}
-              <div style={{ position: "fixed", bottom: 24, right: 28, zIndex: 100, display: "flex", alignItems: "center", gap: 10 }}>
-                {saveMsg && <div className="toast">{saveMsg}</div>}
-                <button className="btn-success" onClick={handleSaveToMongo} style={{ padding: "12px 24px", borderRadius: 10, fontSize: 14, boxShadow: "0 4px 16px rgba(34,197,94,0.3)" }}>
-                  Save to Cloud
-                </button>
-              </div>
+              {/* Toast for save/push/generation status messages */}
+              {saveMsg && (
+                <div style={{ position: "fixed", bottom: 24, right: 28, zIndex: 100 }}>
+                  <div className="toast">{saveMsg}</div>
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", textAlign: "center" }}>
@@ -1105,66 +1867,6 @@ export default function Dashboard() {
           )}
         </div>
       </main>
-    </div>
-  );
-}
-
-function ActionBadge({ value }) {
-  const v = (value || "").toLowerCase();
-  const color = v.includes("add") ? "#22c55e" : v.includes("remove") || v.includes("delete") ? "#ef4444"
-    : v.includes("modify") || v.includes("change") || v.includes("update") ? "#f59e0b" : "#8a8a8a";
-  return (
-    <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", color, border: `1px solid ${color}66`, background: `${color}1A`, borderRadius: 4, padding: "2px 8px", whiteSpace: "nowrap" }}>
-      {value}
-    </span>
-  );
-}
-
-function WorkbenchGrid({ index, title, columns, rows, badgeCol, groupCol, emptyHint }) {
-  let groupIndex = 0;
-  let prevGroupVal;
-  return (
-    <div style={{ marginTop: 22 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 8 }}>
-        <span style={{ fontSize: 11, color: "#818cf8", fontFamily: "monospace" }}>{index}</span>
-        <h4 style={{ fontSize: 15, fontWeight: 700, color: "#e0e0e0", margin: 0 }}>{title}</h4>
-        <span style={{ fontSize: 11, color: "#7a7a7a" }}>{rows.length} {rows.length === 1 ? "item" : "items"}</span>
-      </div>
-      <div className="card" style={{ overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#1e1e1e" }}>
-              {columns.map(c => (
-                <th key={c.key} style={{ textAlign: "left", padding: "8px 14px", fontSize: 10.5, fontWeight: 600, letterSpacing: 0.6, textTransform: "uppercase", color: "#7a7a7a", borderBottom: "1px solid #333" }}>{c.label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr><td colSpan={columns.length} style={{ padding: "18px 14px", fontSize: 12.5, color: "#6a6a6a", fontStyle: "italic" }}>{emptyHint}</td></tr>
-            ) : rows.map((row, i) => {
-              const groupVal = groupCol ? row[groupCol] : null;
-              const isNewGroup = !!groupCol && i > 0 && groupVal !== prevGroupVal;
-              if (isNewGroup) groupIndex += 1;
-              prevGroupVal = groupVal;
-              const zebra = groupCol ? groupIndex % 2 === 1 : i % 2 === 1;
-              return (
-                <tr key={i} style={{
-                  borderBottom: i < rows.length - 1 ? "1px solid #2a2a2a" : "none",
-                  borderTop: isNewGroup ? "2px solid #45455c" : "none",
-                  background: zebra ? "#242428" : "transparent",
-                }}>
-                  {columns.map(c => (
-                    <td key={c.key} style={{ padding: "9px 14px", fontSize: 12.5, color: "#cfcfcf", verticalAlign: "top" }}>
-                      {c.key === badgeCol ? <ActionBadge value={row[c.key]} /> : row[c.key]}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }
@@ -1483,10 +2185,10 @@ const S = {
   wrap: { display: "flex", minHeight: "100vh", background: "#1e1e1e", color: "#e0e0e0", fontFamily: "'Inter', -apple-system, system-ui, sans-serif" },
   side: { background: "#181818", borderRight: "1px solid #2d2d2d", display: "flex", flexDirection: "column", transition: "width 0.2s ease, padding 0.2s ease", flexShrink: 0 },
   logo: { fontSize: 16, fontWeight: 700, margin: 0, color: "#e0e0e0", letterSpacing: 0.2 },
-  main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "#1e1e1e" },
+  main: { flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", background: "#1e1e1e", minHeight: 0 },
   topbar: { display: "flex", alignItems: "center", gap: 12, padding: "10px 24px", borderBottom: "1px solid #2d2d2d", background: "#1e1e1e" },
   badge: { fontSize: 11, color: "#818cf8", background: "rgba(99,102,241,0.15)", padding: "3px 10px", borderRadius: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 },
-  content: { flex: 1, padding: "28px 36px", overflowY: "auto", background: "#1e1e1e" },
+  content: { flex: 1, padding: "28px 36px", overflowY: "auto", background: "#1e1e1e", minHeight: 0 },
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 },
   modal: { padding: 32, width: 440, maxWidth: "90vw" },
   modalH: { fontSize: 20, fontWeight: 700, margin: "0 0 4px", color: "#e0e0e0" },
