@@ -55,6 +55,12 @@ export default function Dashboard() {
           await api.put(`/projects/${projectId}/preview-db/${encodeURIComponent(msg.entity)}`, { rows: msg.rows || [] });
           setDbPreviewStatus(s => (s && s.entity === msg.entity ? { ...s, connected: true } : s));
         } catch { /* best-effort preview sync — don't block the UI on failure */ }
+      } else if (msg.type === "TDIDE_NAVIGATE" && msg.targetScreen) {
+        // A hub/landing screen's nav card was clicked in the live preview — actually switch
+        // the Studio to that screen, instead of the preview's own toast-only stub (there's no
+        // router connecting separate iframes, so this has to happen at the parent level).
+        const target = screensRef.current.find(s => s.name === msg.targetScreen);
+        if (target) { handleSelectScreen(target); setStudioTab("preview"); }
       }
     };
     window.addEventListener("message", handler);
@@ -119,6 +125,11 @@ export default function Dashboard() {
 
   // Multi-screen state
   const [screens, setScreens] = useState([]);
+  // Lets the TDIDE_NAVIGATE handler above (a message-listener closure set up once per
+  // selectedProject.id, not per screens change) always read the CURRENT screens list
+  // instead of whatever it was when that effect last ran.
+  const screensRef = useRef([]);
+  useEffect(() => { screensRef.current = screens; }, [screens]);
   const [activeScreenId, setActiveScreenId] = useState(null);
   const [screenName, setScreenName] = useState("");
   const [screenDesc, setScreenDesc] = useState("");
