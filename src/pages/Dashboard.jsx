@@ -15,6 +15,51 @@ export default function Dashboard() {
   const { user, logout, setUser } = useAuth();
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
+  // Drives the "Connected to DB" / "Sample data" badge next to the UI Preview tab — set from
+  // the TDIDE_READY/TDIDE_INIT_DATA handshake below, keyed by the previewing screen's own
+  // (primary) entity so it doesn't get confused by a lookup entity's data.
+  const [dbPreviewStatus, setDbPreviewStatus] = useState(null);
+  // Bridges the Studio's UI Preview iframes to real rows in the project's own Postgres
+  // schema (proj_<id>, auto-created/kept in sync server-side) — so Add/Edit/Delete in one
+  // screen's preview persists for real and shows up in another screen's preview too, instead
+  // of fake sampleData or a browser-only mock. Protocol: TDIDE_READY / TDIDE_INIT_DATA /
+  // TDIDE_DATA_CHANGE (see XML_TO_HTML_PROMPT's "CROSS-SCREEN DATA SYNC" section).
+  useEffect(() => {
+    const projectId = selectedProject?.id;
+    if (!projectId) return;
+    const handler = async (event) => {
+      const msg = event.data;
+      if (!msg || typeof msg !== "object") return;
+      if (msg.type === "TDIDE_READY") {
+        const wanted = msg.entities || [];
+        const source = event.source;
+        if (!wanted.length || !source) return;
+        const data = {};
+        await Promise.all(wanted.map(async (name) => {
+          try {
+            const res = await api.get(`/projects/${projectId}/preview-db/${encodeURIComponent(name)}`);
+            // Always include the real answer, even an empty array — a screen's hardcoded fake
+            // sample rows must get explicitly cleared on a genuinely-empty table, otherwise the
+            // AI's placeholder data (e.g. "Computer Science", "Mathematics"...) silently rides
+            // along and gets persisted the first time the user saves something real, since it
+            // was never told the truth about there being nothing there yet.
+            data[name] = res.data?.rows || [];
+          } catch { /* table may not exist yet (no sync-schema run) — leave this entity untouched */ }
+        }));
+        source.postMessage({ type: "TDIDE_INIT_DATA", data }, "*");
+        // wanted[0] is always the screen's own entity (lookups follow) — see TDIDE_LOOKUPS
+        // in _inject_cross_screen_sync's injected script.
+        setDbPreviewStatus({ entity: wanted[0], connected: Boolean(data[wanted[0]]?.length) });
+      } else if (msg.type === "TDIDE_DATA_CHANGE" && msg.entity) {
+        try {
+          await api.put(`/projects/${projectId}/preview-db/${encodeURIComponent(msg.entity)}`, { rows: msg.rows || [] });
+          setDbPreviewStatus(s => (s && s.entity === msg.entity ? { ...s, connected: true } : s));
+        } catch { /* best-effort preview sync — don't block the UI on failure */ }
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [selectedProject?.id]);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeSection, setActiveSection] = useState("workbench");
 
@@ -38,7 +83,16 @@ export default function Dashboard() {
   const [frontendLang, setFrontendLang] = useState("React");
 
   // Schema->Screen Studio (structured screen definition + tabbed workspace)
-  const [studioTab, setStudioTab] = useState("preview"); // preview | frontend | backend | endpoints | entities | validations
+  const [studioTab, setStudioTab] = useState("preview"); // preview | frontend | backend | endpoints | entities | data | validations
+  const [studioDataEntity, setStudioDataEntity] = useState(null);
+  const [studioDataRows, setStudioDataRows] = useState(null);
+  const [studioDataLoading, setStudioDataLoading] = useState(false);
+  const [studioDataError, setStudioDataError] = useState("");
+  useEffect(() => {
+    setStudioDataEntity(null);
+    setStudioDataRows(null);
+    setStudioDataError("");
+  }, [selectedProject?.id]);
   const [studioPrimaryEntities, setStudioPrimaryEntities] = useState([]);
   const [studioJoinedEntities, setStudioJoinedEntities] = useState([]);
   const [studioGenerating, setStudioGenerating] = useState(false);
@@ -282,6 +336,21 @@ export default function Dashboard() {
     }
   };
 
+  // Renaming an already-generated screen shouldn't force a full regenerate (XML/HTML/API
+  // are all keyed by screen id, not name) — this is a lightweight PUT of just the name,
+  // fired on blur so typing doesn't spam requests mid-edit.
+  const handleRenameScreen = async (newName) => {
+    const trimmed = newName.trim();
+    if (!activeScreenId || !trimmed) return;
+    const current = screens.find(s => s.id === activeScreenId);
+    if (current && current.name === trimmed) return;
+    try {
+      _syncScreens((await api.put(`/projects/${selectedProject.id}/screens/${activeScreenId}`, { name: trimmed })).data);
+    } catch (err) {
+      setStudioError(err.response?.data?.detail || "Rename failed");
+    }
+  };
+
   // Studio's "Generate Screen": save the structured definition (name + primary/joined
   // entities + freeform description) then run the existing XML -> HTML generation chain.
   // Finalizing a screen means the complete pipeline runs: XML (structure) -> HTML (live
@@ -419,6 +488,21 @@ export default function Dashboard() {
     }
   };
 
+  const loadStudioData = async (entityName) => {
+    if (!entityName || !selectedProject) return;
+    setStudioDataEntity(entityName);
+    setStudioDataLoading(true); setStudioDataError(""); setStudioDataRows(null);
+    try {
+      const res = await api.get(`/projects/${selectedProject.id}/preview-db/${encodeURIComponent(entityName)}`);
+      setStudioDataRows(res.data?.rows || []);
+    } catch (err) {
+      setStudioDataError(err.response?.data?.detail || "Couldn't load data for this entity");
+      setStudioDataRows([]);
+    } finally {
+      setStudioDataLoading(false);
+    }
+  };
+
   const handleFinalize = async () => {
     try { const res = await api.post(`/projects/${selectedProject.id}/finalize`); setSelectedProject(res.data); fetchProjects(); }
     catch (err) { setError(err.response?.data?.detail || "Failed"); }
@@ -483,6 +567,7 @@ export default function Dashboard() {
   };
 
   const handleSelectScreen = (screen) => {
+    setDbPreviewStatus(null);
     setActiveScreenId(screen.id);
     setScreenName(screen.name);
     setScreenDesc(screen.description || "");
@@ -506,6 +591,7 @@ export default function Dashboard() {
   };
 
   const handleNewScreen = () => {
+    setDbPreviewStatus(null);
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
     setScreenTab("html"); setShowScreenCode(false);
@@ -924,8 +1010,13 @@ export default function Dashboard() {
                       <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--st-muted)", letterSpacing: 0.6, margin: "18px 0 6px", padding: "0 8px" }}>SCREENS</div>
                       {screens.map(s => (
                         <div key={s.id} className={"studio-sidebar-item" + (activeScreenId === s.id ? " active" : "")} onClick={() => handleSelectScreen(s)}
-                          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          ▪ {s.name}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>▪ {s.name}</span>
+                          <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete screen "${s.name}"? This can't be undone.`)) handleDeleteScreen(s.id); }}
+                            title="Delete screen"
+                            style={{ flexShrink: 0, background: "transparent", border: "none", color: "var(--st-muted)", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}>
+                            &times;
+                          </button>
                         </div>
                       ))}
                       <div onClick={handleNewScreen} className="studio-sidebar-item" style={{ color: "var(--st-muted)" }}>+ New Screen</div>
@@ -937,7 +1028,9 @@ export default function Dashboard() {
                       <div className="studio-card" style={{ padding: 16 }}>
                         <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Screen Definition</div>
                         <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--st-muted)", display: "block", marginBottom: 4 }}>Screen name</label>
-                        <input className="studio-input" value={screenName} onChange={e => setScreenName(e.target.value)} placeholder="Employee Directory" style={{ marginBottom: 12 }} />
+                        <input className="studio-input" value={screenName} onChange={e => setScreenName(e.target.value)}
+                          onBlur={e => handleRenameScreen(e.target.value)}
+                          placeholder="Employee Directory" style={{ marginBottom: 12 }} />
 
                         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
                           <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--st-muted)" }}>Primary entities</label>
@@ -1051,20 +1144,38 @@ export default function Dashboard() {
                     {/* RIGHT WORKSPACE */}
                     {studioShowPreview && (
                     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, background: "var(--st-surface)" }}>
-                      <div style={{ display: "flex", gap: 22, padding: "0 20px", borderBottom: "1px solid var(--st-border)", flexShrink: 0 }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", columnGap: 22, rowGap: 4, padding: "8px 20px 0", borderBottom: "1px solid var(--st-border)", flexShrink: 0 }}>
                         {[
                           { key: "preview", label: "UI Preview" },
                           { key: "frontend", label: "Frontend Code" },
                           { key: "backend", label: "Backend Code" },
                           { key: "endpoints", label: "REST Endpoints" },
                           { key: "entities", label: "Database Entities" },
+                          { key: "data", label: "Data" },
                           { key: "validations", label: "Validations" },
                         ].map(t => (
                           <button key={t.key} className={"studio-tab" + (studioTab === t.key ? " active" : "")}
-                            onClick={() => { setStudioTab(t.key); if (t.key === "endpoints" && !screenApi && screenXml) handleLoadEndpoints(); }}>
+                            style={{ flexShrink: 0 }}
+                            onClick={() => {
+                              setStudioTab(t.key);
+                              if (t.key === "endpoints" && !screenApi && screenXml) handleLoadEndpoints();
+                              if (t.key === "data" && !studioDataLoading) {
+                                const preferred = studioDataEntity || studioPrimaryEntities[0] || entities?.tables?.[0]?.name;
+                                if (preferred) loadStudioData(preferred);
+                              }
+                            }}>
                             {t.label}
                           </button>
                         ))}
+                        {dbPreviewStatus && (
+                          <span className="studio-pill studio-pill-soft" style={{ marginLeft: "auto", alignSelf: "center", flexShrink: 0,
+                              color: dbPreviewStatus.connected ? "var(--st-success, #16a34a)" : "var(--st-muted)" }}
+                            title={dbPreviewStatus.connected
+                              ? `Reading/writing real rows in this project's Postgres schema (${dbPreviewStatus.entity})`
+                              : `No rows yet in the real DB for ${dbPreviewStatus.entity} — showing the screen's sample data`}>
+                            {dbPreviewStatus.connected ? "● Connected to DB" : "○ Sample data"}
+                          </span>
+                        )}
                       </div>
 
                       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
@@ -1072,7 +1183,7 @@ export default function Dashboard() {
                           screenHtml ? (
                             <iframe key={`${activeScreenId}-${screenHtml.length}`} srcDoc={screenHtml}
                               style={{ width: "100%", height: "100%", minHeight: 480, border: "1px solid var(--st-border)", borderRadius: 8 }}
-                              title="UI Preview" sandbox="allow-scripts" />
+                              title="UI Preview" sandbox="allow-scripts allow-forms" />
                           ) : (
                             <div style={{ textAlign: "center", color: "var(--st-muted)", fontSize: 13, padding: 60 }}>
                               {studioGenerating ? "Generating..." : 'Define a screen on the left and click "Generate Screen" to see a live preview here.'}
@@ -1146,6 +1257,66 @@ export default function Dashboard() {
                               </div>
                             ))}
                             {!entities?.tables?.length && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No entities yet — add one from the sidebar.</div>}
+                          </div>
+                        )}
+
+                        {studioTab === "data" && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                              {(entities?.tables || []).map(t => (
+                                <button key={t.name}
+                                  className={"studio-pill" + (studioDataEntity === t.name ? "" : " studio-pill-soft")}
+                                  style={studioDataEntity === t.name
+                                    ? { background: "var(--st-accent)", color: "#fff", border: "none", cursor: "pointer" }
+                                    : { cursor: "pointer", border: "1px solid var(--st-border)", background: "none" }}
+                                  onClick={() => loadStudioData(t.name)}>
+                                  {t.name}
+                                </button>
+                              ))}
+                              <button className="studio-btn-secondary" style={{ marginLeft: "auto" }}
+                                disabled={!studioDataEntity || studioDataLoading}
+                                onClick={() => loadStudioData(studioDataEntity)}>
+                                {studioDataLoading ? "Loading..." : "Refresh"}
+                              </button>
+                            </div>
+
+                            {!entities?.tables?.length ? (
+                              <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No entities yet — add one from the sidebar.</div>
+                            ) : !studioDataEntity ? (
+                              <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Pick an entity above to see its real rows.</div>
+                            ) : studioDataLoading ? (
+                              <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Loading...</div>
+                            ) : studioDataError ? (
+                              <div style={{ fontSize: 12.5, color: "var(--st-danger)" }}>{studioDataError}</div>
+                            ) : !studioDataRows?.length ? (
+                              <div style={{ color: "var(--st-muted)", fontSize: 13 }}>
+                                No rows in {studioDataEntity} yet — add one through a screen's UI Preview and it'll show up here.
+                              </div>
+                            ) : (
+                              <div className="studio-card" style={{ overflow: "auto" }}>
+                                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                                  <thead><tr style={{ color: "var(--st-muted)" }}>
+                                    {Object.keys(studioDataRows[0]).map(col => (
+                                      <th key={col} style={{ textAlign: "left", padding: "6px 14px", whiteSpace: "nowrap" }}>{col}</th>
+                                    ))}
+                                  </tr></thead>
+                                  <tbody>
+                                    {studioDataRows.map((row, i) => (
+                                      <tr key={i} style={{ borderTop: "1px solid var(--st-border)" }}>
+                                        {Object.keys(studioDataRows[0]).map(col => (
+                                          <td key={col} style={{ padding: "6px 14px", whiteSpace: "nowrap" }}>
+                                            {row[col] === null || row[col] === undefined ? <span style={{ color: "var(--st-muted)" }}>—</span> : String(row[col])}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                                <div style={{ padding: "8px 14px", fontSize: 11.5, color: "var(--st-muted)", borderTop: "1px solid var(--st-border)" }}>
+                                  {studioDataRows.length} row{studioDataRows.length !== 1 ? "s" : ""}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -1566,6 +1737,7 @@ export default function Dashboard() {
                       <div style={{ marginBottom: 10 }}>
                         <label style={S.lbl}>Screen Name</label>
                         <input value={screenName} onChange={e => setScreenName(e.target.value)}
+                          onBlur={e => handleRenameScreen(e.target.value)}
                           placeholder="e.g. Department Master, Employee Form, Order List"
                           style={{ ...S.inp, marginBottom: 0 }} />
                       </div>
@@ -1646,7 +1818,7 @@ export default function Dashboard() {
                               </div>
                               {showScreenCode
                                 ? <SyntaxHighlighter language="html" style={oneDark} customStyle={{ margin: 0, borderRadius: 0, fontSize: 13, lineHeight: 1.6, maxHeight: 600, padding: "16px" }} showLineNumbers wrapLongLines>{screenHtml}</SyntaxHighlighter>
-                                : <iframe srcDoc={screenHtml} style={{ width: "100%", minHeight: 600, border: "none" }} title="Preview" sandbox="allow-scripts" />}
+                                : <iframe srcDoc={screenHtml} style={{ width: "100%", minHeight: 600, border: "none" }} title="Preview" sandbox="allow-scripts allow-forms" />}
                             </>
                           ) : (
                             <div style={{ padding: 40, textAlign: "center", color: "#7a7a7a" }}>
