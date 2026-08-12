@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, memo, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/client";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -13,6 +14,7 @@ const DEFAULT_LANGUAGE_OPTIONS = [{ code: "en", label: "English" }];
 
 export default function Dashboard() {
   const { user, logout, setUser } = useAuth();
+  const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
   // Drives the "Connected to DB" / "Sample data" badge next to the UI Preview tab — set from
@@ -957,6 +959,7 @@ export default function Dashboard() {
               {pushingGithub ? "Pushing..." : "↑ Push to GitHub"}
             </button>
           )}
+          <button className="btn-secondary" onClick={() => navigate("/generate")} style={{ fontSize: 13, padding: "8px 14px" }}>Screen Generator</button>
           <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 13, padding: "8px 14px" }}>+ New</button>
         </header>
 
@@ -2045,7 +2048,10 @@ export default function Dashboard() {
               </div>
               <h2 style={{ fontSize: 24, fontWeight: 700, color: "#e0e0e0", margin: "0 0 8px" }}>Welcome, {user?.full_name || "there"}</h2>
               <p style={{ color: "#7a7a7a", fontSize: 14, margin: "0 0 28px", maxWidth: 380, lineHeight: 1.6 }}>Design database schemas, generate validation logic, and build user interfaces — all from plain English descriptions.</p>
-              <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 14, padding: "12px 28px" }}>Create New Project</button>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
+                <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 14, padding: "12px 28px" }}>Create New Project</button>
+                <button className="btn-secondary" onClick={() => navigate("/generate")} style={{ fontSize: 14, padding: "12px 28px" }}>Screen Generator</button>
+              </div>
             </div>
           )}
         </div>

@@ -3,6 +3,7 @@ import { GoogleOAuthProvider } from "@react-oauth/google";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
+import ScreenGenerator from "./pages/ScreenGenerator";
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
 
@@ -37,6 +38,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/generate"
+              element={
+                <ProtectedRoute>
+                  <ScreenGenerator />
                 </ProtectedRoute>
               }
             />
