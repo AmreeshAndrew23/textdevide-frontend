@@ -112,6 +112,12 @@ export default function Dashboard() {
   const [newEntityPrompt, setNewEntityPrompt] = useState("");
   const [newEntityGenerating, setNewEntityGenerating] = useState(false);
   const [newEntityError, setNewEntityError] = useState("");
+  // Blocking questions from the last /extract or /refine call (see EXTENDED_SCHEMA_RULES'
+  // "unresolved" — blocking:true means the AI had to guess at something that could produce a
+  // wrong/unusable schema). The schema is already saved by the time these show up; this is a
+  // follow-up refinement loop, not a gate on getting anything generated at all.
+  const [newEntityUnresolved, setNewEntityUnresolved] = useState([]);
+  const [newEntityFollowup, setNewEntityFollowup] = useState("");
   const [schemaUnresolved, setSchemaUnresolved] = useState([]);
   const [schemaAssistantTable, setSchemaAssistantTable] = useState(null);
   const [schemaAssistantTab, setSchemaAssistantTab] = useState("schema");
@@ -135,6 +141,11 @@ export default function Dashboard() {
   const [activeScreenId, setActiveScreenId] = useState(null);
   const [screenName, setScreenName] = useState("");
   const [screenDesc, setScreenDesc] = useState("");
+  // Optional wireframe/screenshot reference for "Generate Screen" — a data URL, persisted on
+  // the screen itself (screen.reference_image) so it survives regenerating/reselecting.
+  const [screenRefImage, setScreenRefImage] = useState(null);
+  const [screenRefImageName, setScreenRefImageName] = useState("");
+  const [screenRefImageError, setScreenRefImageError] = useState("");
   const [screenXml, setScreenXml] = useState("");
   const [screenHtml, setScreenHtml] = useState("");
   const [screenApi, setScreenApi] = useState("");
@@ -218,6 +229,7 @@ export default function Dashboard() {
     setScreens(parsedScreens);
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
+    setScreenRefImage(null); setScreenRefImageName(""); setScreenRefImageError("");
     setScreenTab("html"); setShowScreenCode(false);
     setStudioTab("preview"); setStudioPrimaryEntities([]); setStudioJoinedEntities([]); setStudioError(""); setStudioEndpoints(null);
     setShowNewEntityModal(false); setNewEntityPrompt(""); setNewEntityError("");
@@ -273,22 +285,62 @@ export default function Dashboard() {
   };
 
   // "+ New entity from prompt" — extends the schema via the existing refine/extract endpoints.
+  // If the AI had to guess at something that could produce a wrong/unusable schema (a
+  // "blocking" unresolved item — see EXTENDED_SCHEMA_RULES in ai_service.py), the modal stays
+  // open with those questions instead of closing, so the user can add detail and refine
+  // further — like a follow-up question, not unlike how ChatGPT clarifies before finishing.
+  // The schema itself is already saved either way (best-effort), so this loop only ever adds
+  // or clarifies — it never blocks getting a first result.
+  const _applyNewEntityResult = (data) => {
+    setSelectedProject(data);
+    fetchProjects();
+    const blocking = (data.unresolved || []).filter(u => u.blocking);
+    if (blocking.length) {
+      setNewEntityUnresolved(blocking);
+    } else {
+      setShowNewEntityModal(false);
+      setNewEntityPrompt("");
+      setNewEntityUnresolved([]);
+      setNewEntityFollowup("");
+    }
+  };
+
   const handleGenerateNewEntity = async () => {
     if (!newEntityPrompt.trim()) return;
     setNewEntityGenerating(true); setNewEntityError("");
     try {
+      const instruction = `The user wants: ${newEntityPrompt}\n\nIf this describes one simple table, add just that. If it describes a broader feature/domain, add every related table a complete implementation needs.`;
       const res = selectedProject.entities
-        ? await api.post(`/projects/${selectedProject.id}/refine`, { entities: selectedProject.entities, instruction: `Add a new entity: ${newEntityPrompt}` })
+        ? await api.post(`/projects/${selectedProject.id}/refine`, { entities: selectedProject.entities, instruction })
         : await api.post(`/projects/${selectedProject.id}/extract`, { description: newEntityPrompt, features: newEntityPrompt });
-      setSelectedProject(res.data);
-      fetchProjects();
-      setShowNewEntityModal(false);
-      setNewEntityPrompt("");
+      _applyNewEntityResult(res.data);
     } catch (err) {
       setNewEntityError(err.response?.data?.detail || "Failed to generate schema");
     } finally {
       setNewEntityGenerating(false);
     }
+  };
+
+  const handleAnswerNewEntityFollowup = async () => {
+    if (!newEntityFollowup.trim()) return;
+    setNewEntityGenerating(true); setNewEntityError("");
+    try {
+      const instruction = `Regarding the new tables you just added for "${newEntityPrompt}": ${newEntityFollowup}`;
+      const res = await api.post(`/projects/${selectedProject.id}/refine`, { entities: selectedProject.entities, instruction });
+      setNewEntityFollowup("");
+      _applyNewEntityResult(res.data);
+    } catch (err) {
+      setNewEntityError(err.response?.data?.detail || "Failed to update schema");
+    } finally {
+      setNewEntityGenerating(false);
+    }
+  };
+
+  const handleDismissNewEntityFollowup = () => {
+    setShowNewEntityModal(false);
+    setNewEntityPrompt("");
+    setNewEntityUnresolved([]);
+    setNewEntityFollowup("");
   };
 
   // Client-side mirror of the backend's _schema_suggestions heuristic, used only for the
@@ -364,6 +416,26 @@ export default function Dashboard() {
     }
   };
 
+  // A wireframe/screenshot the user attaches so "Generate Screen" can visually match it
+  // (see generate_html_from_xml's reference_image param) — read client-side as a data URL,
+  // capped so the project's ui_screens JSON blob doesn't balloon.
+  const handleUploadRefImage = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // lets the same file be re-selected later (e.g. after removing it)
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { setScreenRefImageError("Please choose an image file"); return; }
+    const MAX_BYTES = 4 * 1024 * 1024;
+    if (file.size > MAX_BYTES) { setScreenRefImageError("Image is too large — please use one under 4MB"); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setScreenRefImage(reader.result);
+      setScreenRefImageName(file.name);
+      setScreenRefImageError("");
+    };
+    reader.onerror = () => setScreenRefImageError("Couldn't read that file");
+    reader.readAsDataURL(file);
+  };
+
   // Studio's "Generate Screen": save the structured definition (name + primary/joined
   // entities + freeform description) then run the existing XML -> HTML generation chain.
   // Finalizing a screen means the complete pipeline runs: XML (structure) -> HTML (live
@@ -375,7 +447,7 @@ export default function Dashboard() {
     if (!screenName.trim()) { setStudioError("Enter a screen name first"); return; }
     setStudioGenerating(true); setStudioError(""); setStudioStep("Saving screen definition...");
     let screenId = activeScreenId;
-    const payload = { name: screenName.trim(), description: screenDesc, primary_entities: studioPrimaryEntities, joined_entities: studioJoinedEntities };
+    const payload = { name: screenName.trim(), description: screenDesc, primary_entities: studioPrimaryEntities, joined_entities: studioJoinedEntities, reference_image: screenRefImage };
     try {
       if (!screenId) {
         const res = await api.post(`/projects/${selectedProject.id}/screens`, payload);
@@ -404,7 +476,7 @@ export default function Dashboard() {
       if (!xml) throw new Error("XML generation returned nothing");
 
       setStudioStep("Generating live preview (HTML)...");
-      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang });
+      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang, reference_image: screenRefImage });
       parsed = _syncScreens(htmlRes.data);
       setScreenHtml(parsed.find(s => s.id === screenId)?.html || "");
 
@@ -584,6 +656,9 @@ export default function Dashboard() {
     setActiveScreenId(screen.id);
     setScreenName(screen.name);
     setScreenDesc(screen.description || "");
+    setScreenRefImage(screen.reference_image || null);
+    setScreenRefImageName(screen.reference_image ? "Saved reference image" : "");
+    setScreenRefImageError("");
     setScreenXml(screen.xml || "");
     setScreenHtml(screen.html || "");
     setScreenApi(screen.api || "");
@@ -607,6 +682,7 @@ export default function Dashboard() {
     setDbPreviewStatus(null);
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
+    setScreenRefImage(null); setScreenRefImageName(""); setScreenRefImageError("");
     setScreenTab("html"); setShowScreenCode(false);
     setStudioPrimaryEntities([]); setStudioJoinedEntities([]); setStudioEndpoints(null); setStudioError("");
     setScreenChat([]); setScreenChatInput("");
@@ -1100,6 +1176,23 @@ export default function Dashboard() {
                         <textarea className="studio-textarea" rows={5} value={screenDesc} onChange={e => setScreenDesc(e.target.value)}
                           placeholder="A searchable, filterable directory. Show name, email, department... Include filters and an 'Add' action." />
 
+                        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <input type="file" accept="image/*" id="studio-ref-image-input" style={{ display: "none" }} onChange={handleUploadRefImage} />
+                          <label htmlFor="studio-ref-image-input" className="studio-btn-secondary" style={{ cursor: "pointer", fontSize: 12.5 }}>
+                            {screenRefImage ? "Replace wireframe/screenshot" : "Upload wireframe/screenshot"}
+                          </label>
+                          {screenRefImage && (
+                            <>
+                              <img src={screenRefImage} alt="Reference" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 6, border: "1px solid var(--st-border)" }} />
+                              <span style={{ fontSize: 12, color: "var(--st-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>{screenRefImageName}</span>
+                              <button className="studio-btn-secondary" style={{ fontSize: 12, padding: "3px 8px" }}
+                                onClick={() => { setScreenRefImage(null); setScreenRefImageName(""); }}>×</button>
+                            </>
+                          )}
+                        </div>
+                        {screenRefImageError && <div style={{ marginTop: 6, fontSize: 12, color: "var(--st-danger)" }}>{screenRefImageError}</div>}
+                        {screenRefImage && <div style={{ marginTop: 4, fontSize: 11.5, color: "var(--st-muted)" }}>Generate Screen will use this as a visual reference for layout and style.</div>}
+
                         {screenXml && (
                           <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--st-border)" }}>
                             <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Refine with chat</div>
@@ -1356,24 +1449,52 @@ export default function Dashboard() {
                   {/* New entity from prompt modal */}
                   {showNewEntityModal && (
                     <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,46,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
-                      onClick={() => setShowNewEntityModal(false)}>
+                      onClick={() => (newEntityUnresolved.length ? handleDismissNewEntityFollowup() : setShowNewEntityModal(false))}>
                       <div className="studio-card" onClick={e => e.stopPropagation()} style={{ padding: 24, width: 460 }}>
-                        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>New entity from prompt</div>
-                        <p style={{ fontSize: 12.5, color: "var(--st-muted)", margin: "0 0 14px" }}>Describe the entity in plain language.</p>
-                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-                          {["Time-off requests", "Performance reviews"].map(chip => (
-                            <span key={chip} onClick={() => setNewEntityPrompt(chip)} className="studio-pill" style={{ cursor: "pointer", border: "1px solid var(--st-border)", color: "var(--st-muted)" }}>{chip}</span>
-                          ))}
-                        </div>
-                        <textarea className="studio-textarea" rows={4} value={newEntityPrompt} onChange={e => setNewEntityPrompt(e.target.value)}
-                          placeholder="e.g. Track employee time-off requests with start date, end date, type, and approval status." style={{ marginBottom: 12 }} />
-                        {newEntityError && <div style={{ fontSize: 12.5, color: "var(--st-danger)", marginBottom: 10 }}>{newEntityError}</div>}
-                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                          <button className="studio-btn-secondary" onClick={() => setShowNewEntityModal(false)}>Cancel</button>
-                          <button className="studio-btn-primary" onClick={handleGenerateNewEntity} disabled={newEntityGenerating || !newEntityPrompt.trim()}>
-                            {newEntityGenerating ? <><span className="spinner" /> Generating...</> : "Generate schema"}
-                          </button>
-                        </div>
+                        {newEntityUnresolved.length > 0 ? (
+                          <>
+                            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Before I finalize this...</div>
+                            <p style={{ fontSize: 12.5, color: "var(--st-muted)", margin: "0 0 14px" }}>
+                              The tables are already added — a couple of things I wasn't sure about:
+                            </p>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+                              {newEntityUnresolved.map((u, i) => (
+                                <div key={i} style={{ fontSize: 12.5, display: "flex", gap: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, padding: "8px 10px" }}>
+                                  <span>⚠</span>
+                                  <span>{u.entity ? `[${u.entity}${u.column ? "." + u.column : ""}] ` : ""}{u.question}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <textarea className="studio-textarea" rows={3} value={newEntityFollowup} onChange={e => setNewEntityFollowup(e.target.value)}
+                              placeholder="Add detail to resolve these (optional)..." style={{ marginBottom: 12 }} />
+                            {newEntityError && <div style={{ fontSize: 12.5, color: "var(--st-danger)", marginBottom: 10 }}>{newEntityError}</div>}
+                            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                              <button className="studio-btn-secondary" onClick={handleDismissNewEntityFollowup}>Looks good as-is</button>
+                              <button className="studio-btn-primary" onClick={handleAnswerNewEntityFollowup} disabled={newEntityGenerating || !newEntityFollowup.trim()}>
+                                {newEntityGenerating ? <><span className="spinner" /> Updating...</> : "Update"}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>New entity from prompt</div>
+                            <p style={{ fontSize: 12.5, color: "var(--st-muted)", margin: "0 0 14px" }}>Describe the entity — or a whole feature (e.g. "bug tracking") and every related table it needs will be added.</p>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                              {["Time-off requests", "Performance reviews"].map(chip => (
+                                <span key={chip} onClick={() => setNewEntityPrompt(chip)} className="studio-pill" style={{ cursor: "pointer", border: "1px solid var(--st-border)", color: "var(--st-muted)" }}>{chip}</span>
+                              ))}
+                            </div>
+                            <textarea className="studio-textarea" rows={4} value={newEntityPrompt} onChange={e => setNewEntityPrompt(e.target.value)}
+                              placeholder="e.g. Track employee time-off requests with start date, end date, type, and approval status." style={{ marginBottom: 12 }} />
+                            {newEntityError && <div style={{ fontSize: 12.5, color: "var(--st-danger)", marginBottom: 10 }}>{newEntityError}</div>}
+                            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                              <button className="studio-btn-secondary" onClick={() => setShowNewEntityModal(false)}>Cancel</button>
+                              <button className="studio-btn-primary" onClick={handleGenerateNewEntity} disabled={newEntityGenerating || !newEntityPrompt.trim()}>
+                                {newEntityGenerating ? <><span className="spinner" /> Generating...</> : "Generate schema"}
+                              </button>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
                   )}
