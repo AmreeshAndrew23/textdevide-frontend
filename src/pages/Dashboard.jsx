@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import api from "../api/client";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { deriveTheme, applyThemeToHtml, readPrimaryColor, readSecondaryColor } from "../utils/theme";
 
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
@@ -17,6 +18,8 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState([]);
   const [selectedProject, setSelectedProject] = useState(null);
+  const selectedProjectIdRef = useRef(null);
+  useEffect(() => { selectedProjectIdRef.current = selectedProject?.id ?? null; }, [selectedProject]);
   // Drives the "Connected to DB" / "Sample data" badge next to the UI Preview tab — set from
   // the TDIDE_READY/TDIDE_INIT_DATA handshake below, keyed by the previewing screen's own
   // (primary) entity so it doesn't get confused by a lookup entity's data.
@@ -84,6 +87,38 @@ export default function Dashboard() {
   const [expandedTables, setExpandedTables] = useState({});
   const [saveMsg, setSaveMsg] = useState("");
 
+  // Background screen-generation jobs, so the user can navigate away mid-generation instead of
+  // being stuck watching a spinner. bgJobIdRef hands out ids; notifications is a small stacked
+  // toast queue (unlike saveMsg's single slot, multiple jobs can finish close together).
+  const [bgJobs, setBgJobs] = useState([]);
+  const [showBgJobsDropdown, setShowBgJobsDropdown] = useState(false);
+  const bgJobIdRef = useRef(0);
+  const [notifications, setNotifications] = useState([]);
+  const pushNotification = (text, type = "info") => {
+    const id = ++bgJobIdRef.current;
+    setNotifications(list => [...list, { id, text, type }]);
+    setTimeout(() => setNotifications(list => list.filter(n => n.id !== id)), 7000);
+  };
+  const startBgJob = (projectId, projectName, screenId, label) => {
+    const id = ++bgJobIdRef.current;
+    setBgJobs(jobs => [...jobs, { id, projectId, projectName, screenId, label, status: "running" }]);
+    return id;
+  };
+  const updateBgJob = (id, patch) => setBgJobs(jobs => jobs.map(j => (j.id === id ? { ...j, ...patch } : j)));
+  const finishBgJob = (id, status, extra = {}) => {
+    updateBgJob(id, { status, ...extra });
+    // A job holding pendingVariantsFor is deliberately kept around (not auto-removed) until
+    // handleSelectScreen picks it up when the user reopens that screen — could be much later
+    // than the usual few-seconds dropdown display.
+    if (!extra.pendingVariantsFor) {
+      setTimeout(() => setBgJobs(jobs => jobs.filter(j => j.id !== id)), 5000);
+    }
+  };
+  // Only touch screen-editor-local UI state (screenXml/screenHtml/studioTab/...) when the user
+  // is still actually looking at the screen a background step just finished — see _syncScreens
+  // above for the equivalent project-level guard.
+  const isLiveScreen = (screenId) => activeScreenIdRef.current === screenId;
+
   const [validationRules, setValidationRules] = useState("");
   const [validationCode, setValidationCode] = useState("");
   const [validationLoading, setValidationLoading] = useState(false);
@@ -118,6 +153,17 @@ export default function Dashboard() {
   // follow-up refinement loop, not a gate on getting anything generated at all.
   const [newEntityUnresolved, setNewEntityUnresolved] = useState([]);
   const [newEntityFollowup, setNewEntityFollowup] = useState("");
+  // "+ New Screen(s) from prompt" — mirrors the New Entity flow above: detect-intents decides
+  // whether the description is one screen or a whole app's worth, asks a clarifying question
+  // when genuinely ambiguous (same unresolved/blocking shape), then either runs the normal
+  // single-screen pipeline (3 design variants etc.) or bulk-generates every detected screen.
+  const [showNewScreensModal, setShowNewScreensModal] = useState(false);
+  const [newScreensPrompt, setNewScreensPrompt] = useState("");
+  const [newScreensGenerating, setNewScreensGenerating] = useState(false);
+  const [newScreensError, setNewScreensError] = useState("");
+  const [newScreensUnresolved, setNewScreensUnresolved] = useState([]);
+  const [newScreensDetected, setNewScreensDetected] = useState([]); // last detect-intents "screens" result, pending confirmation
+  const [newScreensFollowup, setNewScreensFollowup] = useState("");
   const [schemaUnresolved, setSchemaUnresolved] = useState([]);
   const [schemaAssistantTable, setSchemaAssistantTable] = useState(null);
   const [schemaAssistantTab, setSchemaAssistantTab] = useState("schema");
@@ -139,6 +185,13 @@ export default function Dashboard() {
   const screensRef = useRef([]);
   useEffect(() => { screensRef.current = screens; }, [screens]);
   const [activeScreenId, setActiveScreenId] = useState(null);
+  // Background-generation jobs (see startBgJob below) read these instead of closing over
+  // selectedProject/activeScreenId directly, so a job started for one project/screen can tell,
+  // at each async step's completion, whether the user is STILL looking at that exact
+  // project/screen — and only touch visible editor state when they are, instead of repainting
+  // whatever the user has since navigated to.
+  const activeScreenIdRef = useRef(null);
+  useEffect(() => { activeScreenIdRef.current = activeScreenId; }, [activeScreenId]);
   const [screenName, setScreenName] = useState("");
   const [screenDesc, setScreenDesc] = useState("");
   // Optional wireframe/screenshot reference for "Generate Screen" — a data URL, persisted on
@@ -146,6 +199,18 @@ export default function Dashboard() {
   const [screenRefImage, setScreenRefImage] = useState(null);
   const [screenRefImageName, setScreenRefImageName] = useState("");
   const [screenRefImageError, setScreenRefImageError] = useState("");
+  // Design-variant picker for text-prompt generation (no reference image): 3 candidate
+  // designs come back from generate-html-variants and the user picks one before the
+  // backend/frontend code generation step runs.
+  const [screenVariants, setScreenVariants] = useState([]);
+  const [showVariantPicker, setShowVariantPicker] = useState(false);
+  const [variantPickerError, setVariantPickerError] = useState("");
+  const [variantPicking, setVariantPicking] = useState(false);
+  // Color palette editor for the generated preview — recolors screenHtml client-side by
+  // rewriting its :root CSS custom properties, no AI call needed. screenHtmlSavedRef tracks
+  // the last-persisted html so "Reset" can revert without a refetch.
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const screenHtmlSavedRef = useRef("");
   const [screenXml, setScreenXml] = useState("");
   const [screenHtml, setScreenHtml] = useState("");
   const [screenApi, setScreenApi] = useState("");
@@ -230,9 +295,16 @@ export default function Dashboard() {
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
     setScreenRefImage(null); setScreenRefImageName(""); setScreenRefImageError("");
+    setScreenVariants([]); setShowVariantPicker(false); setVariantPickerError(""); setShowColorPicker(false);
+    screenHtmlSavedRef.current = "";
     setScreenTab("html"); setShowScreenCode(false);
     setStudioTab("preview"); setStudioPrimaryEntities([]); setStudioJoinedEntities([]); setStudioError(""); setStudioEndpoints(null);
+    // studioGenerating/studioStep reflect "is the screen I'm currently looking at generating" —
+    // switching projects always lands on a screen that isn't (any real in-flight job keeps
+    // running and reporting via bgJobs regardless), so this must never carry over.
+    setStudioGenerating(false); setStudioStep("");
     setShowNewEntityModal(false); setNewEntityPrompt(""); setNewEntityError("");
+    setShowNewScreensModal(false); setNewScreensPrompt(""); setNewScreensError(""); setNewScreensUnresolved([]); setNewScreensDetected([]);
     setError(""); setSaveMsg("");
   };
 
@@ -443,19 +515,36 @@ export default function Dashboard() {
   // code (page component + API service, in the project's chosen frontend language). XML
   // and HTML are saved for the preview, but the "deliverable" code shown to the user is
   // the frontend + backend source, not the XML/HTML themselves.
-  const handleStudioGenerate = async () => {
-    if (!screenName.trim()) { setStudioError("Enter a screen name first"); return; }
-    setStudioGenerating(true); setStudioError(""); setStudioStep("Saving screen definition...");
+  // overrideName/overrideDesc let a caller (e.g. the New Screen(s)-from-prompt flow, see
+  // handleDetectNewScreens below) trigger generation with fresh values immediately after
+  // setScreenName/setScreenDesc, without hitting the stale-closure gap of those setters not
+  // having flushed into `screenName`/`screenDesc` yet on this same call.
+  const handleStudioGenerate = async (overrideName, overrideDesc) => {
+    const name = (overrideName ?? screenName).trim();
+    const desc = overrideDesc ?? screenDesc;
+    if (!name) { setStudioError("Enter a screen name first"); return; }
+    const projectId = selectedProject.id;
     let screenId = activeScreenId;
-    const payload = { name: screenName.trim(), description: screenDesc, primary_entities: studioPrimaryEntities, joined_entities: studioJoinedEntities, reference_image: screenRefImage };
+    const jobId = startBgJob(projectId, selectedProject.name, screenId, `Generating "${name}"...`);
+    // Safe unconditionally — no await has happened yet, so the user is definitely still on
+    // this exact screen at this exact moment. Every setter after an await below is gated on
+    // isLiveScreen instead, since the user may have navigated away by the time it resolves.
+    setStudioGenerating(true); setStudioError(""); setStudioStep("Saving screen definition...");
+    const payload = { name, description: desc, primary_entities: studioPrimaryEntities, joined_entities: studioJoinedEntities, reference_image: screenRefImage };
     try {
       if (!screenId) {
-        const res = await api.post(`/projects/${selectedProject.id}/screens`, payload);
+        const res = await api.post(`/projects/${projectId}/screens`, payload);
         const parsed = _syncScreens(res.data);
         screenId = parsed[parsed.length - 1].id;
-        setActiveScreenId(screenId);
+        updateBgJob(jobId, { screenId });
+        // Only jump the user into the new screen if they're still sitting in the blank "new
+        // screen" composer for this same project — don't yank them away from wherever they've
+        // since navigated to.
+        if (selectedProjectIdRef.current === projectId && activeScreenIdRef.current === null) {
+          setActiveScreenId(screenId);
+        }
       } else {
-        _syncScreens((await api.put(`/projects/${selectedProject.id}/screens/${screenId}`, payload)).data);
+        _syncScreens((await api.put(`/projects/${projectId}/screens/${screenId}`, payload)).data);
       }
 
       // Selecting more than one primary entity signals "this is a navigation/landing screen",
@@ -467,33 +556,262 @@ export default function Dashboard() {
           ? `This is a navigation/landing screen that routes to the other screens covering these entities: ${studioPrimaryEntities.join(", ")}. `
           : `Primary entity: ${studioPrimaryEntities[0]}.${studioJoinedEntities.length ? ` Joined entities: ${studioJoinedEntities.join(", ")}.` : ""} `
         : "";
-      setStudioStep("Generating screen structure (XML)...");
-      const xmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-xml`, { description: contextLine + screenDesc });
+      if (isLiveScreen(screenId)) setStudioStep("Generating screen structure (XML)...");
+      const xmlRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-xml`, { description: contextLine + desc });
       let parsed = _syncScreens(xmlRes.data);
       const xml = parsed.find(s => s.id === screenId)?.xml || "";
-      setScreenXml(xml);
-      setScreenChat([]); setScreenChatInput("");  // fresh base generation invalidates prior chat
+      if (isLiveScreen(screenId)) {
+        setScreenXml(xml);
+        setScreenChat([]); setScreenChatInput("");  // fresh base generation invalidates prior chat
+      }
       if (!xml) throw new Error("XML generation returned nothing");
 
-      setStudioStep("Generating live preview (HTML)...");
-      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang, reference_image: screenRefImage });
-      parsed = _syncScreens(htmlRes.data);
-      setScreenHtml(parsed.find(s => s.id === screenId)?.html || "");
-
-      setStudioStep(`Generating backend (${selectedProject.language}) + frontend (${frontendLang}) code...`);
-      const apiRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-api`, { xml });
-      parsed = _syncScreens(apiRes.data);
-      const apiCode = parsed.find(s => s.id === screenId)?.api || "";
-      setScreenApi(apiCode);
-      const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
-      try { setStudioEndpoints(contractsFile ? normalizeEndpoints(JSON.parse(contractsFile.code)) : null); }
-      catch { setStudioEndpoints(null); }
-
-      setStudioTab("preview");
+      if (screenRefImage || selectedProject.ui_theme) {
+        // Image mode: one faithful result, no variant choice — matching an uploaded
+        // wireframe/screenshot only makes sense as a single attempt at that one image.
+        // Established-theme mode: this project already locked its colors/font/density from
+        // an earlier screen (see handlePickVariant) — every screen after the first reuses it
+        // directly instead of offering 3 variants, so the whole app looks like one product.
+        if (isLiveScreen(screenId)) setStudioStep("Generating live preview (HTML)...");
+        const htmlRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang, reference_image: screenRefImage });
+        parsed = _syncScreens(htmlRes.data);
+        const html = parsed.find(s => s.id === screenId)?.html || "";
+        if (isLiveScreen(screenId)) {
+          setScreenHtml(html);
+          screenHtmlSavedRef.current = html;
+        }
+        await _finishStudioGenerate(screenId, xml);
+        if (isLiveScreen(screenId)) setStudioTab("preview");
+        finishBgJob(jobId, "done");
+        pushNotification(`"${name}" is ready.`, "success");
+      } else {
+        // First screen in the project, no image: offer 3 visibly different designs. If the
+        // user is still on this screen, pause here and show the picker as before — the
+        // backend/frontend code step (_finishStudioGenerate) then runs once they pick, via
+        // handlePickVariant, which also locks the pick as this project's shared theme. If
+        // they've navigated away, don't pop a modal over whatever they're doing now — stash
+        // the variants on the job so reselecting this screen later can still offer them.
+        if (isLiveScreen(screenId)) setStudioStep("Generating 3 design options...");
+        const variantsRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html-variants`, { xml, frontend_lang: frontendLang });
+        const variants = variantsRes.data.variants || [];
+        if (isLiveScreen(screenId)) {
+          setScreenVariants(variants);
+          setVariantPickerError("");
+          setShowVariantPicker(true);
+          finishBgJob(jobId, "done");
+        } else {
+          finishBgJob(jobId, "done", { variants, pendingVariantsFor: screenId });
+          pushNotification(`3 design options ready for "${name}" — open the screen to pick one.`, "info");
+        }
+      }
     } catch (err) {
-      setStudioError(err.response?.data?.detail || "Screen generation failed");
+      const msg = err.response?.data?.detail || "Screen generation failed";
+      if (isLiveScreen(screenId)) setStudioError(msg);
+      finishBgJob(jobId, "error", { error: msg });
+      pushNotification(`"${name}" failed: ${msg}`, "error");
     } finally {
-      setStudioGenerating(false); setStudioStep("");
+      if (isLiveScreen(screenId)) { setStudioGenerating(false); setStudioStep(""); }
+    }
+  };
+
+  // Shared tail of screen generation: turns the (now-settled) XML into backend + frontend
+  // deliverable code. Called both directly (image mode) and after a design variant is picked.
+  const _finishStudioGenerate = async (screenId, xml) => {
+    if (isLiveScreen(screenId)) setStudioStep(`Generating backend (${selectedProject.language}) + frontend (${frontendLang}) code...`);
+    const apiRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-api`, { xml });
+    const parsed = _syncScreens(apiRes.data);
+    if (!isLiveScreen(screenId)) return;
+    const apiCode = parsed.find(s => s.id === screenId)?.api || "";
+    setScreenApi(apiCode);
+    const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
+    try { setStudioEndpoints(contractsFile ? normalizeEndpoints(JSON.parse(contractsFile.code)) : null); }
+    catch { setStudioEndpoints(null); }
+  };
+
+  // Full pipeline for ONE screen in a bulk ("+ New Screen(s) from prompt") batch: create ->
+  // XML -> HTML (no variant picker here — see _runNewScreensBatch) -> backend/frontend code.
+  // Mirrors handleStudioGenerate + _finishStudioGenerate but doesn't touch the single-screen
+  // editor state (screenXml/screenHtml/screenApi/...) since N screens are being generated
+  // unattended; the caller selects one screen to focus once the whole batch is done.
+  const _generateOneScreenFull = async ({ name, description, primaryEntities = [] }) => {
+    const payload = { name, description, primary_entities: primaryEntities, joined_entities: [] };
+    const createRes = await api.post(`/projects/${selectedProject.id}/screens`, payload);
+    let parsed = _syncScreens(createRes.data);
+    const screenId = parsed[parsed.length - 1].id;
+
+    const xmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-xml`, { description });
+    parsed = _syncScreens(xmlRes.data);
+    const xml = parsed.find(s => s.id === screenId)?.xml || "";
+    if (!xml) throw new Error(`XML generation returned nothing for "${name}"`);
+
+    const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang });
+    parsed = _syncScreens(htmlRes.data);
+
+    const apiRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-api`, { xml });
+    parsed = _syncScreens(apiRes.data);
+
+    return { screenId, screens: parsed };
+  };
+
+  // Runs after detect-intents resolves (no blocking questions left, or the user dismissed
+  // them). One detected screen -> the normal polished single-screen flow (variants, image,
+  // colors). Multiple -> bulk-generate every one of them; if detection appended a trailing
+  // Dashboard/landing screen (see SCREEN_INTENT_PROMPT), it gets primary_entities spanning
+  // every table so the server's existing is_hub detection (routes/projects.py) kicks in and
+  // wires up real navigation to the screens generated just before it.
+  const _runNewScreensBatch = async (screensFound) => {
+    if (!screensFound.length) {
+      setNewScreensError("Nothing to generate — try describing the screen(s) you need.");
+      return;
+    }
+    if (screensFound.length === 1) {
+      handleNewScreen();
+      setScreenName(screensFound[0].name);
+      setScreenDesc(screensFound[0].description);
+      setShowNewScreensModal(false);
+      setNewScreensPrompt(""); setNewScreensDetected([]); setNewScreensUnresolved([]);
+      handleStudioGenerate(screensFound[0].name, screensFound[0].description);
+      return;
+    }
+
+    // The batch itself runs as a background job from here on — close the modal immediately
+    // instead of blocking the whole app behind its spinner for however long N screens take.
+    const projectId = selectedProject.id;
+    const projectName = selectedProject.name;
+    setShowNewScreensModal(false);
+    setNewScreensPrompt(""); setNewScreensDetected([]); setNewScreensUnresolved([]);
+    setNewScreensGenerating(false);
+    const jobId = startBgJob(projectId, projectName, null, `Generating ${screensFound.length} screens...`);
+    try {
+      const last = screensFound[screensFound.length - 1];
+      const isDashboard = screensFound.length >= 3 && /dashboard|landing page|home page/i.test(last.name);
+      const allTableNames = (entities?.tables || []).map(t => t.name);
+      const generatedNames = [];
+      let lastResult = null;
+
+      for (let i = 0; i < screensFound.length; i++) {
+        const s = screensFound[i];
+        const isThisDashboard = isDashboard && i === screensFound.length - 1;
+        updateBgJob(jobId, { label: `Generating ${i + 1} of ${screensFound.length}: ${s.name}...` });
+        const desc = isThisDashboard
+          ? `This is a navigation/landing screen that routes to the other screens in this app: ${generatedNames.join(", ")}. ${s.description}`
+          : s.description;
+        lastResult = await _generateOneScreenFull({
+          name: s.name, description: desc,
+          primaryEntities: isThisDashboard ? allTableNames : [],
+        });
+        generatedNames.push(s.name);
+      }
+
+      finishBgJob(jobId, "done");
+      pushNotification(`Generated ${screensFound.length} screens: ${screensFound.map(s => s.name).join(", ")}`, "success");
+
+      // Land on the last generated screen (the dashboard, if there is one) — but only if the
+      // user is still on the same project; if they've navigated elsewhere, leave them there
+      // instead of yanking them back.
+      if (lastResult && selectedProjectIdRef.current === projectId) {
+        const target = lastResult.screens.find(s => s.id === lastResult.screenId);
+        if (target) handleSelectScreen(target);
+      }
+    } catch (err) {
+      const msg = err.response?.data?.detail || "Screen generation failed";
+      finishBgJob(jobId, "error", { error: msg });
+      pushNotification(`Screen batch failed: ${msg}`, "error");
+    }
+  };
+
+  const handleDetectNewScreens = async () => {
+    if (!newScreensPrompt.trim()) return;
+    setNewScreensGenerating(true); setNewScreensError("");
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/screens/detect-intents`, { description: newScreensPrompt });
+      const screensFound = res.data.screens || [];
+      const blocking = (res.data.unresolved || []).filter(u => u.blocking);
+      if (blocking.length) {
+        setNewScreensDetected(screensFound);
+        setNewScreensUnresolved(blocking);
+        setNewScreensGenerating(false);
+      } else {
+        await _runNewScreensBatch(screensFound);
+      }
+    } catch (err) {
+      setNewScreensError(err.response?.data?.detail || "Screen detection failed");
+      setNewScreensGenerating(false);
+    }
+  };
+
+  const handleAnswerNewScreensFollowup = async () => {
+    if (!newScreensFollowup.trim()) return;
+    setNewScreensError("");
+    try {
+      const instruction = `${newScreensPrompt}\n\nAdditional detail: ${newScreensFollowup}`;
+      const res = await api.post(`/projects/${selectedProject.id}/screens/detect-intents`, { description: instruction });
+      const screensFound = res.data.screens || [];
+      const blocking = (res.data.unresolved || []).filter(u => u.blocking);
+      setNewScreensFollowup("");
+      if (blocking.length) {
+        setNewScreensDetected(screensFound);
+        setNewScreensUnresolved(blocking);
+      } else {
+        await _runNewScreensBatch(screensFound);
+      }
+    } catch (err) {
+      setNewScreensError(err.response?.data?.detail || "Screen detection failed");
+    }
+  };
+
+  const handleDismissNewScreensFollowup = () => {
+    _runNewScreensBatch(newScreensDetected);
+  };
+
+  const handlePickVariant = async (html, label) => {
+    if (!activeScreenId) return;
+    const screenId = activeScreenId;
+    const projectId = selectedProject.id;
+    setVariantPicking(true); setVariantPickerError("");
+    // The picker modal blocks all other interaction while open, so up to this point the user
+    // is guaranteed still on this screen — but closing it below lets them navigate away before
+    // the backend/frontend code generation tail finishes, so that part still needs a job +
+    // isLiveScreen gating (already built into _finishStudioGenerate).
+    const jobId = startBgJob(projectId, selectedProject.name, screenId, `Finishing "${screenName || "screen"}"...`);
+    try {
+      // Committing to this variant is what locks the project's shared theme (see
+      // routes/projects.py update_screen) — only sent when the project doesn't already have
+      // one; the backend itself no-ops this once ui_theme is set, so it's safe to always send.
+      const lockThemeDensity = /dense/i.test(label || "") ? "DENSE" : "CLEAN";
+      _syncScreens((await api.put(`/projects/${projectId}/screens/${screenId}`, { html, lock_theme_density: lockThemeDensity })).data);
+      if (isLiveScreen(screenId)) {
+        setScreenHtml(html);
+        screenHtmlSavedRef.current = html;
+        setShowVariantPicker(false);
+        setScreenVariants([]);
+        setStudioGenerating(true);
+      }
+      await _finishStudioGenerate(screenId, screenXml);
+      if (isLiveScreen(screenId)) setStudioTab("preview");
+      finishBgJob(jobId, "done");
+      pushNotification(`"${screenName || "Screen"}" is ready.`, "success");
+    } catch (err) {
+      const msg = err.response?.data?.detail || "Failed to save the picked design";
+      if (isLiveScreen(screenId)) setVariantPickerError(msg);
+      finishBgJob(jobId, "error", { error: msg });
+      pushNotification(`"${screenName || "Screen"}" failed: ${msg}`, "error");
+    } finally {
+      setVariantPicking(false);
+      if (isLiveScreen(screenId)) { setStudioGenerating(false); setStudioStep(""); }
+    }
+  };
+
+  const handleRegenerateVariants = async () => {
+    if (!activeScreenId || !screenXml) return;
+    setVariantPicking(true); setVariantPickerError("");
+    try {
+      const variantsRes = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-html-variants`, { xml: screenXml, frontend_lang: frontendLang });
+      setScreenVariants(variantsRes.data.variants || []);
+    } catch (err) {
+      setVariantPickerError(err.response?.data?.detail || "Failed to generate new options");
+    } finally {
+      setVariantPicking(false);
     }
   };
 
@@ -644,10 +962,18 @@ export default function Dashboard() {
   };
 
   // Sync screens from API response
+  // Every generation step's response funnels through here. Background jobs (see startBgJob)
+  // keep calling this normally even after the user navigates elsewhere — persisting to the DB
+  // is always correct — but it must NOT blindly overwrite selectedProject/screens if the user
+  // has since switched to a DIFFERENT project, or a slow job for project A would repaint the
+  // screen while the user is now looking at project B. Same-project screen-to-screen navigation
+  // is intentionally still allowed through, so the sidebar list keeps updating live.
   const _syncScreens = (data) => {
-    setSelectedProject(data);
     const parsed = data.ui_screens ? (() => { try { return JSON.parse(data.ui_screens); } catch { return []; } })() : [];
-    setScreens(parsed);
+    if (data.id === selectedProjectIdRef.current) {
+      setSelectedProject(data);
+      setScreens(parsed);
+    }
     return parsed;
   };
 
@@ -661,6 +987,8 @@ export default function Dashboard() {
     setScreenRefImageError("");
     setScreenXml(screen.xml || "");
     setScreenHtml(screen.html || "");
+    screenHtmlSavedRef.current = screen.html || "";
+    setScreenVariants([]); setShowVariantPicker(false); setVariantPickerError(""); setShowColorPicker(false);
     setScreenApi(screen.api || "");
     setScreenTab(screen.html ? "html" : screen.xml ? "xml" : "html");
     setShowScreenCode(false);
@@ -676,6 +1004,23 @@ export default function Dashboard() {
     setStudioEndpoints(normalized);
     setStudioError("");
     setError("");
+    // Reset to this screen's own (idle) state — if a background job for THIS screen is still
+    // running, its next isLiveScreen-gated update will correctly flip this back to true.
+    setStudioGenerating(false); setStudioStep("");
+
+    // A background generation may have finished offering 3 design variants for THIS screen
+    // while the user was elsewhere (see handleStudioGenerate) — if they never got saved (no
+    // html yet) and the user is opening this screen now, pick up where that job left off
+    // instead of silently losing the work.
+    if (!screen.html) {
+      const pending = bgJobs.find(j => j.pendingVariantsFor === screen.id && j.status === "done");
+      if (pending) {
+        setScreenVariants(pending.variants || []);
+        setVariantPickerError("");
+        setShowVariantPicker(true);
+        setBgJobs(jobs => jobs.filter(j => j.id !== pending.id));
+      }
+    }
   };
 
   const handleNewScreen = () => {
@@ -683,9 +1028,12 @@ export default function Dashboard() {
     setActiveScreenId(null);
     setScreenName(""); setScreenDesc(""); setScreenXml(""); setScreenHtml(""); setScreenApi("");
     setScreenRefImage(null); setScreenRefImageName(""); setScreenRefImageError("");
+    setScreenVariants([]); setShowVariantPicker(false); setVariantPickerError(""); setShowColorPicker(false);
+    screenHtmlSavedRef.current = "";
     setScreenTab("html"); setShowScreenCode(false);
     setStudioPrimaryEntities([]); setStudioJoinedEntities([]); setStudioEndpoints(null); setStudioError("");
     setScreenChat([]); setScreenChatInput("");
+    setStudioGenerating(false); setStudioStep("");
     setError("");
   };
 
@@ -906,6 +1254,20 @@ export default function Dashboard() {
 
   return (
     <div style={S.wrap}>
+      {/* Background-generation notifications — global, so a job started on one project/screen
+          still notifies the user even after they've navigated elsewhere (see startBgJob). */}
+      {notifications.length > 0 && (
+        <div style={{ position: "fixed", bottom: 24, right: 28, zIndex: 2000, display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+          {notifications.map(n => (
+            <div key={n.id} className="toast" style={{
+              background: n.type === "error" ? "#7f1d1d" : n.type === "success" ? "#14532d" : undefined,
+            }}>
+              {n.type === "success" ? "✓ " : n.type === "error" ? "⚠ " : "⏳ "}{n.text}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Modal */}
       {showNewModal && (
         <div style={S.overlay} onClick={() => setShowNewModal(false)}>
@@ -960,6 +1322,11 @@ export default function Dashboard() {
           <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
             <button className="btn-secondary" onClick={() => setShowSettings(true)} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Settings</button>
           </div>
+          {user?.is_superuser && (
+            <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+              <button className="btn-secondary" onClick={() => navigate("/admin")} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>🪙 Admin</button>
+            </div>
+          )}
           <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
             <button className="btn-secondary" onClick={logout} style={{ flex: 1, justifyContent: "center", fontSize: 12, padding: "6px 12px" }}>Log out</button>
           </div>
@@ -1035,6 +1402,28 @@ export default function Dashboard() {
               {pushingGithub ? "Pushing..." : "↑ Push to GitHub"}
             </button>
           )}
+          {bgJobs.length > 0 && (
+            <div style={{ position: "relative" }}>
+              <button className="btn-secondary" onClick={() => setShowBgJobsDropdown(v => !v)}
+                style={{ fontSize: 12, padding: "6px 12px", display: "flex", alignItems: "center", gap: 6 }}>
+                {bgJobs.some(j => j.status === "running") && <span className="spinner" />}
+                {bgJobs.length} background {bgJobs.length === 1 ? "task" : "tasks"}
+              </button>
+              {showBgJobsDropdown && (
+                <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, width: 300, background: "#1e1e1e", border: "1px solid #3c3c3c", borderRadius: 8, padding: 8, zIndex: 200, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+                  {bgJobs.map(j => (
+                    <div key={j.id} style={{ padding: "8px 10px", fontSize: 12, borderBottom: "1px solid #2d2d30", display: "flex", alignItems: "center", gap: 8 }}>
+                      {j.status === "running" ? <span className="spinner" /> : j.status === "error" ? "⚠" : "✓"}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ color: "#cfcfcf", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{j.label}</div>
+                        <div style={{ color: "#7a7a7a", fontSize: 11 }}>{j.projectName}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button className="btn-secondary" onClick={() => navigate("/generate")} style={{ fontSize: 13, padding: "8px 14px" }}>Screen Generator</button>
           <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ fontSize: 13, padding: "8px 14px" }}>+ New</button>
         </header>
@@ -1075,7 +1464,7 @@ export default function Dashboard() {
                       title={studioShowPreview ? "Hide the live preview" : "Show the live preview"}>
                       {studioShowPreview ? "Hide preview" : "Show preview"}
                     </button>
-                    <button className="studio-btn-primary" onClick={handleStudioGenerate} disabled={studioGenerating}>
+                    <button className="studio-btn-primary" onClick={() => handleStudioGenerate()} disabled={studioGenerating}>
                       {studioGenerating ? <><span className="spinner" /> Generating...</> : "Generate Screen"}
                     </button>
                   </div>
@@ -1110,6 +1499,7 @@ export default function Dashboard() {
                         </div>
                       ))}
                       <div onClick={handleNewScreen} className="studio-sidebar-item" style={{ color: "var(--st-muted)" }}>+ New Screen</div>
+                      <div onClick={() => setShowNewScreensModal(true)} className="studio-sidebar-item" style={{ color: "var(--st-accent)", fontWeight: 600 }}>+ New Screen(s) from prompt</div>
                     </div>
 
                     {/* MIDDLE PANEL */}
@@ -1274,6 +1664,12 @@ export default function Dashboard() {
                             {t.label}
                           </button>
                         ))}
+                        {studioTab === "preview" && screenHtml && (
+                          <button className="studio-btn-secondary" style={{ marginLeft: dbPreviewStatus ? 0 : "auto", alignSelf: "center", flexShrink: 0, fontSize: 12, padding: "4px 10px" }}
+                            onClick={() => setShowColorPicker(v => !v)}>
+                            🎨 Colors
+                          </button>
+                        )}
                         {dbPreviewStatus && (
                           <span className="studio-pill studio-pill-soft" style={{ marginLeft: "auto", alignSelf: "center", flexShrink: 0,
                               color: dbPreviewStatus.connected ? "var(--st-success, #16a34a)" : "var(--st-muted)" }}
@@ -1284,6 +1680,18 @@ export default function Dashboard() {
                           </span>
                         )}
                       </div>
+                      {studioTab === "preview" && showColorPicker && screenHtml && (
+                        <ColorPalettePopover
+                          html={screenHtml}
+                          onPreview={(newHtml) => setScreenHtml(newHtml)}
+                          onSave={async () => {
+                            _syncScreens((await api.put(`/projects/${selectedProject.id}/screens/${activeScreenId}`, { html: screenHtml })).data);
+                            screenHtmlSavedRef.current = screenHtml;
+                          }}
+                          onReset={() => setScreenHtml(screenHtmlSavedRef.current)}
+                          onClose={() => setShowColorPicker(false)}
+                        />
+                      )}
 
                       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
                         {studioTab === "preview" && (
@@ -1495,6 +1903,97 @@ export default function Dashboard() {
                             </div>
                           </>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* New Screen(s) from prompt modal */}
+                  {showNewScreensModal && (
+                    <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,46,0.35)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+                      onClick={() => (newScreensUnresolved.length ? null : setShowNewScreensModal(false))}>
+                      <div className="studio-card" onClick={e => e.stopPropagation()} style={{ padding: 24, width: 460 }}>
+                        {newScreensUnresolved.length > 0 ? (
+                          <>
+                            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Before I generate these...</div>
+                            <p style={{ fontSize: 12.5, color: "var(--st-muted)", margin: "0 0 14px" }}>
+                              A couple of things I wasn't sure about how to split into screens:
+                            </p>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+                              {newScreensUnresolved.map((u, i) => (
+                                <div key={i} style={{ fontSize: 12.5, display: "flex", gap: 6, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, padding: "8px 10px" }}>
+                                  <span>⚠</span>
+                                  <span>{u.question}</span>
+                                </div>
+                              ))}
+                            </div>
+                            <textarea className="studio-textarea" rows={3} value={newScreensFollowup} onChange={e => setNewScreensFollowup(e.target.value)}
+                              placeholder="Add detail to resolve these (optional)..." style={{ marginBottom: 12 }} />
+                            {newScreensError && <div style={{ fontSize: 12.5, color: "var(--st-danger)", marginBottom: 10 }}>{newScreensError}</div>}
+                            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                              <button className="studio-btn-secondary" onClick={handleDismissNewScreensFollowup}>Looks good as-is</button>
+                              <button className="studio-btn-primary" onClick={handleAnswerNewScreensFollowup} disabled={newScreensGenerating || !newScreensFollowup.trim()}>
+                                {newScreensGenerating ? <><span className="spinner" /> Updating...</> : "Update"}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>New Screen(s) from prompt</div>
+                            <p style={{ fontSize: 12.5, color: "var(--st-muted)", margin: "0 0 14px" }}>
+                              Describe one screen, or a whole app (e.g. "a personal finance app with expense tracking, budgets, goals, and reports") and every screen it needs will be generated — XML, live preview, backend routes, and frontend code for each.
+                            </p>
+                            <textarea className="studio-textarea" rows={5} value={newScreensPrompt} onChange={e => setNewScreensPrompt(e.target.value)}
+                              placeholder="e.g. Build a personal finance app: daily expense tracking, budget planning, savings goals, and monthly/yearly reports." style={{ marginBottom: 12 }} />
+                            {newScreensError && <div style={{ fontSize: 12.5, color: "var(--st-danger)", marginBottom: 10 }}>{newScreensError}</div>}
+                            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                              <button className="studio-btn-secondary" onClick={() => setShowNewScreensModal(false)}>Cancel</button>
+                              <button className="studio-btn-primary" onClick={handleDetectNewScreens} disabled={newScreensGenerating || !newScreensPrompt.trim()}>
+                                {newScreensGenerating ? <><span className="spinner" /> Analyzing...</> : "Generate"}
+                              </button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {showVariantPicker && (
+                    <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <div className="studio-card" style={{ padding: 24, width: "min(900px, 92vw)", maxHeight: "88vh", overflowY: "auto" }}>
+                        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Pick a design</div>
+                        <p style={{ fontSize: 12.5, color: "var(--st-muted)", margin: "0 0 16px" }}>
+                          3 different visual designs for the same screen — pick one to continue. You can still fine-tune colors afterward.
+                        </p>
+                        {variantPickerError && <div style={{ fontSize: 12.5, color: "var(--st-danger)", marginBottom: 12 }}>{variantPickerError}</div>}
+                        {screenVariants.length === 0 ? (
+                          <div style={{ textAlign: "center", color: "var(--st-muted)", fontSize: 13, padding: 40 }}>
+                            <span className="spinner" /> Generating options...
+                          </div>
+                        ) : (
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 16 }}>
+                            {screenVariants.map((v, i) => (
+                              <div key={i} style={{ border: "1px solid var(--st-border)", borderRadius: 10, overflow: "hidden", background: "var(--st-bg)" }}>
+                                <div style={{ position: "relative", height: 220, overflow: "hidden", borderBottom: "1px solid var(--st-border)" }}>
+                                  <iframe srcDoc={v.html} title={v.label} tabIndex={-1}
+                                    style={{ width: 300, height: 280, border: "none", pointerEvents: "none" }} />
+                                </div>
+                                <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                                  <div style={{ fontWeight: 600, fontSize: 13 }}>{v.label}</div>
+                                  <button className="studio-btn-primary" style={{ fontSize: 12, padding: "6px 10px" }}
+                                    disabled={variantPicking} onClick={() => handlePickVariant(v.html, v.label)}>
+                                    {variantPicking ? <><span className="spinner" /> Applying...</> : "Use this design"}
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                          <button className="studio-btn-secondary" disabled={variantPicking} onClick={() => { setShowVariantPicker(false); setScreenVariants([]); }}>Cancel</button>
+                          <button className="studio-btn-secondary" disabled={variantPicking || screenVariants.length === 0} onClick={handleRegenerateVariants}>
+                            🔄 3 new options
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -2177,6 +2676,81 @@ export default function Dashboard() {
           )}
         </div>
       </main>
+    </div>
+  );
+}
+
+const COLOR_PRESETS = ["#4F46E5", "#1E3A5F", "#0D9488", "#065F46", "#F97316", "#A21CAF", "#DC2626", "#D97706", "#0369A1", "#7C2D12", "#4C1D95", "#166534"];
+const SECONDARY_COLOR_PRESETS = ["#0EA5A5", "#7C3AED", "#DB2777", "#0369A1", "#B45309", "#334155", "#15803D", "#9D174D", "#1D4ED8", "#B91C1C", "#0F766E", "#78350F"];
+
+// Native <input type="color"> is deliberately uncontrolled: React's onChange for type="color"
+// mirrors the native "input" event, which fires continuously while the OS picker is open (every
+// drag tick) rather than once on commit. Wiring that straight to onPick (which triggers a full
+// screenHtml update + iframe remount) caused heavy DOM churn WHILE the native picker overlay was
+// open, which made it auto-close mid-drag. Listening for the native "change" event instead (fires
+// once, when the picker actually closes) fixes that; key={value} keeps the swatch in sync when a
+// preset button changes the color externally, without making this element React-controlled.
+function ColorInput({ value, onPick }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const handler = (e) => onPick(e.target.value);
+    el.addEventListener("change", handler);
+    return () => el.removeEventListener("change", handler);
+  }, [onPick]);
+  return (
+    <input ref={ref} type="color" defaultValue={value} key={value}
+      style={{ width: 32, height: 32, padding: 0, border: "1px solid var(--st-border)", borderRadius: 6, cursor: "pointer" }} />
+  );
+}
+
+function ColorRow({ label, current, presets, onPick }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--st-muted)", width: 90 }}>{label}:</span>
+      <ColorInput value={current} onPick={onPick} />
+      <div style={{ display: "flex", gap: 6 }}>
+        {presets.map(hex => (
+          <button key={hex} onClick={() => onPick(hex)} title={hex}
+            style={{ width: 22, height: 22, borderRadius: "50%", background: hex, cursor: "pointer",
+              border: hex.toUpperCase() === current.toUpperCase() ? "2px solid var(--st-text)" : "1px solid var(--st-border)" }} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ColorPalettePopover({ html, onPreview, onSave, onReset, onClose }) {
+  const currentPrimary = readPrimaryColor(html) || COLOR_PRESETS[0];
+  const currentSecondary = readSecondaryColor(html) || SECONDARY_COLOR_PRESETS[0];
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  const pickPrimary = (hex) => onPreview(applyThemeToHtml(html, deriveTheme(hex, currentSecondary)));
+  const pickSecondary = (hex) => onPreview(applyThemeToHtml(html, deriveTheme(currentPrimary, hex)));
+
+  const handleSave = async () => {
+    setSaving(true); setSaveError("");
+    try { await onSave(); onClose(); }
+    catch (err) { setSaveError(err.response?.data?.detail || "Failed to save colors"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="studio-card" style={{ margin: "10px 20px 0", padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+      <ColorRow label="Primary color" current={currentPrimary} presets={COLOR_PRESETS} onPick={pickPrimary} />
+      <ColorRow label="Secondary color" current={currentSecondary} presets={SECONDARY_COLOR_PRESETS} onPick={pickSecondary} />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {saveError && <span style={{ fontSize: 12, color: "var(--st-danger)" }}>{saveError}</span>}
+        <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+          <button className="studio-btn-secondary" style={{ fontSize: 12, padding: "5px 12px" }} onClick={onReset}>Reset</button>
+          <button className="studio-btn-primary" style={{ fontSize: 12, padding: "5px 12px" }} onClick={handleSave} disabled={saving}>
+            {saving ? <><span className="spinner" /> Saving...</> : "Save"}
+          </button>
+          <button onClick={onClose} title="Close" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, color: "var(--st-muted)" }}>✕</button>
+        </div>
+      </div>
     </div>
   );
 }
