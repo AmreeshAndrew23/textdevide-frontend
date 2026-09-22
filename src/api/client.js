@@ -1,7 +1,12 @@
 import axios from "axios";
 
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
+// Same host as the API, without the /api suffix — the server-rendered screen route
+// (GET /runtime/projects/:id/screens/:screenId) lives outside that prefix.
+export const API_ORIGIN = API_URL.replace(/\/api\/?$/, "");
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "http://localhost:8000/api",
+  baseURL: API_URL,
 });
 
 api.interceptors.request.use((config) => {

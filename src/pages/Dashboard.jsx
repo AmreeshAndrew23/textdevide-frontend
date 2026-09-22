@@ -5,6 +5,9 @@ import api from "../api/client";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { deriveTheme, applyThemeToHtml, readPrimaryColor, readSecondaryColor } from "../utils/theme";
+import XmlScreenRenderer from "../components/XmlScreenRenderer"; // eslint-disable-line no-unused-vars -- kept for rollback, see ServerScreenRenderer
+import ServerScreenRenderer from "../components/ServerScreenRenderer";
+import AppShell from "../components/AppShell";
 
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
@@ -12,6 +15,14 @@ const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "N
 // Fallbacks used until /auth/config/options loads
 const DEFAULT_DATE_FORMATS = ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "DD-MMM-YYYY", "DD.MM.YYYY"];
 const DEFAULT_LANGUAGE_OPTIONS = [{ code: "en", label: "English" }];
+
+// Design-variant picker thumbnails: generated screens are full desktop layouts (the HTML prompt
+// itself targets a 1440px monitor), so the iframe is rendered at that real size and scaled down
+// as a whole — showing the entire design shrunk to fit, rather than a 1:1 crop that only ever
+// showed the first ~220px of any real screen (basically just the header).
+const VARIANT_PREVIEW_VIRTUAL_W = 1440;
+const VARIANT_PREVIEW_VIRTUAL_H = 1000;
+const VARIANT_PREVIEW_SCALE = 300 / VARIANT_PREVIEW_VIRTUAL_W;
 
 export default function Dashboard() {
   const { user, logout, setUser } = useAuth();
@@ -40,6 +51,7 @@ export default function Dashboard() {
         const source = event.source;
         if (!wanted.length || !source) return;
         const data = {};
+        let primarySynced = false;
         await Promise.all(wanted.map(async (name) => {
           try {
             const res = await api.get(`/projects/${projectId}/preview-db/${encodeURIComponent(name)}`);
@@ -49,16 +61,24 @@ export default function Dashboard() {
             // along and gets persisted the first time the user saves something real, since it
             // was never told the truth about there being nothing there yet.
             data[name] = res.data?.rows || [];
-          } catch { /* table may not exist yet (no sync-schema run) — leave this entity untouched */ }
+            // "synced" (from the backend, a real table-existence check) is NOT the same as "the
+            // request succeeded" — schema sync only actually runs the first time any row changes
+            // anywhere in the project (see put_preview_rows), so a brand-new project's tables
+            // genuinely don't exist yet, and the GET call still returns 200 + [] for those too.
+            if (name === wanted[0]) primarySynced = Boolean(res.data?.synced);
+          } catch { /* network/auth failure — leave this entity untouched */ }
         }));
         source.postMessage({ type: "TDIDE_INIT_DATA", data }, "*");
-        // wanted[0] is always the screen's own entity (lookups follow) — see TDIDE_LOOKUPS
-        // in _inject_cross_screen_sync's injected script.
-        setDbPreviewStatus({ entity: wanted[0], connected: Boolean(data[wanted[0]]?.length) });
+        // wanted[0] is always the screen's own entity (lookups follow) — see TDIDE_LOOKUPS in
+        // _inject_cross_screen_sync's injected script. "connected" and "hasRows" are tracked
+        // separately — a genuinely-empty real table is still connected, just empty, and the
+        // badge should say so instead of reading as "not connected" (which used to be inferred
+        // purely from row count, so an empty-but-real table looked identical to a never-synced one).
+        setDbPreviewStatus({ entity: wanted[0], connected: primarySynced, hasRows: Boolean(data[wanted[0]]?.length) });
       } else if (msg.type === "TDIDE_DATA_CHANGE" && msg.entity) {
         try {
           await api.put(`/projects/${projectId}/preview-db/${encodeURIComponent(msg.entity)}`, { rows: msg.rows || [] });
-          setDbPreviewStatus(s => (s && s.entity === msg.entity ? { ...s, connected: true } : s));
+          setDbPreviewStatus(s => (s && s.entity === msg.entity ? { ...s, connected: true, hasRows: (msg.rows || []).length > 0 } : s));
         } catch { /* best-effort preview sync — don't block the UI on failure */ }
       } else if (msg.type === "TDIDE_NAVIGATE" && msg.targetScreen) {
         // A hub/landing screen's nav card was clicked in the live preview — actually switch
@@ -165,6 +185,9 @@ export default function Dashboard() {
   const [newScreensDetected, setNewScreensDetected] = useState([]); // last detect-intents "screens" result, pending confirmation
   const [newScreensFollowup, setNewScreensFollowup] = useState("");
   const [schemaUnresolved, setSchemaUnresolved] = useState([]);
+  const [neo4jCreating, setNeo4jCreating] = useState(false);
+  const [neo4jResult, setNeo4jResult] = useState(null); // { summary, statements, labels } from the last "Create DB" run
+  const [neo4jError, setNeo4jError] = useState("");
   const [schemaAssistantTable, setSchemaAssistantTable] = useState(null);
   const [schemaAssistantTab, setSchemaAssistantTab] = useState("schema");
   const [schemaAssistantChat, setSchemaAssistantChat] = useState([]);
@@ -206,6 +229,10 @@ export default function Dashboard() {
   const [showVariantPicker, setShowVariantPicker] = useState(false);
   const [variantPickerError, setVariantPickerError] = useState("");
   const [variantPicking, setVariantPicking] = useState(false);
+  // Set instead of relying on activeScreenId/screenXml when the variant picker above is blocking
+  // a bulk "+ New Screen(s) from prompt" batch's first screen (see _runNewScreensBatch /
+  // handleBatchPickVariant) rather than the single-screen editor the picker normally assumes.
+  const [batchPickerCtx, setBatchPickerCtx] = useState(null);
   // Color palette editor for the generated preview — recolors screenHtml client-side by
   // rewriting its :root CSS custom properties, no AI call needed. screenHtmlSavedRef tracks
   // the last-persisted html so "Reset" can revert without a refetch.
@@ -566,44 +593,40 @@ export default function Dashboard() {
       }
       if (!xml) throw new Error("XML generation returned nothing");
 
-      if (screenRefImage || selectedProject.ui_theme) {
-        // Image mode: one faithful result, no variant choice — matching an uploaded
-        // wireframe/screenshot only makes sense as a single attempt at that one image.
-        // Established-theme mode: this project already locked its colors/font/density from
-        // an earlier screen (see handlePickVariant) — every screen after the first reuses it
-        // directly instead of offering 3 variants, so the whole app looks like one product.
-        if (isLiveScreen(screenId)) setStudioStep("Generating live preview (HTML)...");
-        const htmlRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang, reference_image: screenRefImage });
-        parsed = _syncScreens(htmlRes.data);
-        const html = parsed.find(s => s.id === screenId)?.html || "";
-        if (isLiveScreen(screenId)) {
-          setScreenHtml(html);
-          screenHtmlSavedRef.current = html;
-        }
-        await _finishStudioGenerate(screenId, xml);
-        if (isLiveScreen(screenId)) setStudioTab("preview");
-        finishBgJob(jobId, "done");
-        pushNotification(`"${name}" is ready.`, "success");
-      } else {
-        // First screen in the project, no image: offer 3 visibly different designs. If the
-        // user is still on this screen, pause here and show the picker as before — the
-        // backend/frontend code step (_finishStudioGenerate) then runs once they pick, via
-        // handlePickVariant, which also locks the pick as this project's shared theme. If
-        // they've navigated away, don't pop a modal over whatever they're doing now — stash
-        // the variants on the job so reselecting this screen later can still offer them.
-        if (isLiveScreen(screenId)) setStudioStep("Generating 3 design options...");
-        const variantsRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html-variants`, { xml, frontend_lang: frontendLang });
-        const variants = variantsRes.data.variants || [];
-        if (isLiveScreen(screenId)) {
-          setScreenVariants(variants);
-          setVariantPickerError("");
-          setShowVariantPicker(true);
-          finishBgJob(jobId, "done");
-        } else {
-          finishBgJob(jobId, "done", { variants, pendingVariantsFor: screenId });
-          pushNotification(`3 design options ready for "${name}" — open the screen to pick one.`, "info");
-        }
-      }
+      // RETIRED — HTML/backend/frontend code generation and the 3-design-variant picker
+      // (image mode vs. no-theme-yet branch) are gone; XmlScreenRenderer renders `xml` live and
+      // deterministically, so generation is done the moment XML comes back. Kept commented out,
+      // not deleted.
+      // if (screenRefImage || selectedProject.ui_theme) {
+      //   if (isLiveScreen(screenId)) setStudioStep("Generating live preview (HTML)...");
+      //   const htmlRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang, reference_image: screenRefImage });
+      //   parsed = _syncScreens(htmlRes.data);
+      //   const html = parsed.find(s => s.id === screenId)?.html || "";
+      //   if (isLiveScreen(screenId)) {
+      //     setScreenHtml(html);
+      //     screenHtmlSavedRef.current = html;
+      //   }
+      //   await _finishStudioGenerate(screenId, xml);
+      //   if (isLiveScreen(screenId)) setStudioTab("preview");
+      //   finishBgJob(jobId, "done");
+      //   pushNotification(`"${name}" is ready.`, "success");
+      // } else {
+      //   if (isLiveScreen(screenId)) setStudioStep("Generating 3 design options...");
+      //   const variantsRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html-variants`, { xml, frontend_lang: frontendLang });
+      //   const variants = variantsRes.data.variants || [];
+      //   if (isLiveScreen(screenId)) {
+      //     setScreenVariants(variants);
+      //     setVariantPickerError("");
+      //     setShowVariantPicker(true);
+      //     finishBgJob(jobId, "done");
+      //   } else {
+      //     finishBgJob(jobId, "done", { variants, pendingVariantsFor: screenId });
+      //     pushNotification(`3 design options ready for "${name}" — open the screen to pick one.`, "info");
+      //   }
+      // }
+      if (isLiveScreen(screenId)) setStudioTab("preview");
+      finishBgJob(jobId, "done");
+      pushNotification(`"${name}" is ready.`, "success");
     } catch (err) {
       const msg = err.response?.data?.detail || "Screen generation failed";
       if (isLiveScreen(screenId)) setStudioError(msg);
@@ -616,24 +639,23 @@ export default function Dashboard() {
 
   // Shared tail of screen generation: turns the (now-settled) XML into backend + frontend
   // deliverable code. Called both directly (image mode) and after a design variant is picked.
-  const _finishStudioGenerate = async (screenId, xml) => {
-    if (isLiveScreen(screenId)) setStudioStep(`Generating backend (${selectedProject.language}) + frontend (${frontendLang}) code...`);
-    const apiRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-api`, { xml });
-    const parsed = _syncScreens(apiRes.data);
-    if (!isLiveScreen(screenId)) return;
-    const apiCode = parsed.find(s => s.id === screenId)?.api || "";
-    setScreenApi(apiCode);
-    const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
-    try { setStudioEndpoints(contractsFile ? normalizeEndpoints(JSON.parse(contractsFile.code)) : null); }
-    catch { setStudioEndpoints(null); }
-  };
+  // RETIRED — only existed to call generate-api. Kept commented out, not deleted.
+  // const _finishStudioGenerate = async (screenId, xml) => {
+  //   if (isLiveScreen(screenId)) setStudioStep(`Generating backend (${selectedProject.language}) + frontend (${frontendLang}) code...`);
+  //   const apiRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-api`, { xml });
+  //   const parsed = _syncScreens(apiRes.data);
+  //   if (!isLiveScreen(screenId)) return;
+  //   const apiCode = parsed.find(s => s.id === screenId)?.api || "";
+  //   setScreenApi(apiCode);
+  //   const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
+  //   try { setStudioEndpoints(contractsFile ? normalizeEndpoints(JSON.parse(contractsFile.code)) : null); }
+  //   catch { setStudioEndpoints(null); }
+  // };
 
-  // Full pipeline for ONE screen in a bulk ("+ New Screen(s) from prompt") batch: create ->
-  // XML -> HTML (no variant picker here — see _runNewScreensBatch) -> backend/frontend code.
-  // Mirrors handleStudioGenerate + _finishStudioGenerate but doesn't touch the single-screen
-  // editor state (screenXml/screenHtml/screenApi/...) since N screens are being generated
-  // unattended; the caller selects one screen to focus once the whole batch is done.
-  const _generateOneScreenFull = async ({ name, description, primaryEntities = [] }) => {
+  // Create a screen and generate its XML — the common first step of both a bulk batch's per-screen
+  // pipeline and (when the project has no locked design yet) the interactive design-pick step for
+  // a batch's first screen. Extracted so both share it instead of duplicating create+XML calls.
+  const _createScreenAndXml = async ({ name, description, primaryEntities = [] }) => {
     const payload = { name, description, primary_entities: primaryEntities, joined_entities: [] };
     const createRes = await api.post(`/projects/${selectedProject.id}/screens`, payload);
     let parsed = _syncScreens(createRes.data);
@@ -643,53 +665,29 @@ export default function Dashboard() {
     parsed = _syncScreens(xmlRes.data);
     const xml = parsed.find(s => s.id === screenId)?.xml || "";
     if (!xml) throw new Error(`XML generation returned nothing for "${name}"`);
+    return { screenId, xml, screens: parsed };
+  };
 
-    const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang });
-    parsed = _syncScreens(htmlRes.data);
-
-    const apiRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-api`, { xml });
-    parsed = _syncScreens(apiRes.data);
-
+  // Full pipeline for ONE screen in a bulk ("+ New Screen(s) from prompt") batch: create -> XML.
+  // HTML/backend/frontend code generation retired — XmlScreenRenderer renders `xml` live, so
+  // there's nothing left to do once XML exists. Doesn't touch the single-screen editor state
+  // (screenXml/...) since N screens are being generated unattended; the caller selects one
+  // screen to focus once the whole batch is done.
+  const _generateOneScreenFull = async ({ name, description, primaryEntities = [] }) => {
+    const { screenId, screens: parsed } = await _createScreenAndXml({ name, description, primaryEntities });
     return { screenId, screens: parsed };
   };
 
-  // Runs after detect-intents resolves (no blocking questions left, or the user dismissed
-  // them). One detected screen -> the normal polished single-screen flow (variants, image,
-  // colors). Multiple -> bulk-generate every one of them; if detection appended a trailing
-  // Dashboard/landing screen (see SCREEN_INTENT_PROMPT), it gets primary_entities spanning
-  // every table so the server's existing is_hub detection (routes/projects.py) kicks in and
-  // wires up real navigation to the screens generated just before it.
-  const _runNewScreensBatch = async (screensFound) => {
-    if (!screensFound.length) {
-      setNewScreensError("Nothing to generate — try describing the screen(s) you need.");
-      return;
-    }
-    if (screensFound.length === 1) {
-      handleNewScreen();
-      setScreenName(screensFound[0].name);
-      setScreenDesc(screensFound[0].description);
-      setShowNewScreensModal(false);
-      setNewScreensPrompt(""); setNewScreensDetected([]); setNewScreensUnresolved([]);
-      handleStudioGenerate(screensFound[0].name, screensFound[0].description);
-      return;
-    }
-
-    // The batch itself runs as a background job from here on — close the modal immediately
-    // instead of blocking the whole app behind its spinner for however long N screens take.
-    const projectId = selectedProject.id;
-    const projectName = selectedProject.name;
-    setShowNewScreensModal(false);
-    setNewScreensPrompt(""); setNewScreensDetected([]); setNewScreensUnresolved([]);
-    setNewScreensGenerating(false);
-    const jobId = startBgJob(projectId, projectName, null, `Generating ${screensFound.length} screens...`);
+  // Runs the bulk-generation loop over screensFound starting at startIndex, tracking dashboard-nav
+  // wiring and job progress/completion. Shared by the "project already has a locked design" fast
+  // path and the "just picked a design for screen #1" continuation after handleBatchPickVariant —
+  // both need the identical per-screen loop, just a different starting point and seed state.
+  const _continueBatch = async (jobId, projectId, screensFound, startIndex, generatedNames, lastResult) => {
+    const last = screensFound[screensFound.length - 1];
+    const isDashboard = screensFound.length >= 3 && /dashboard|landing page|home page/i.test(last.name);
+    const allTableNames = (entities?.tables || []).map(t => t.name);
     try {
-      const last = screensFound[screensFound.length - 1];
-      const isDashboard = screensFound.length >= 3 && /dashboard|landing page|home page/i.test(last.name);
-      const allTableNames = (entities?.tables || []).map(t => t.name);
-      const generatedNames = [];
-      let lastResult = null;
-
-      for (let i = 0; i < screensFound.length; i++) {
+      for (let i = startIndex; i < screensFound.length; i++) {
         const s = screensFound[i];
         const isThisDashboard = isDashboard && i === screensFound.length - 1;
         updateBgJob(jobId, { label: `Generating ${i + 1} of ${screensFound.length}: ${s.name}...` });
@@ -719,6 +717,89 @@ export default function Dashboard() {
       pushNotification(`Screen batch failed: ${msg}`, "error");
     }
   };
+
+  // Runs after detect-intents resolves (no blocking questions left, or the user dismissed
+  // them). One detected screen -> the normal polished single-screen flow (variants, image,
+  // colors). Multiple -> bulk-generate every one of them; if detection appended a trailing
+  // Dashboard/landing screen (see SCREEN_INTENT_PROMPT), it gets primary_entities spanning
+  // every table so the server's existing is_hub detection (routes/projects.py) kicks in and
+  // wires up real navigation to the screens generated just before it.
+  const _runNewScreensBatch = async (screensFound) => {
+    if (!screensFound.length) {
+      setNewScreensError("Nothing to generate — try describing the screen(s) you need.");
+      return;
+    }
+    if (screensFound.length === 1) {
+      handleNewScreen();
+      setScreenName(screensFound[0].name);
+      setScreenDesc(screensFound[0].description);
+      setShowNewScreensModal(false);
+      setNewScreensPrompt(""); setNewScreensDetected([]); setNewScreensUnresolved([]);
+      handleStudioGenerate(screensFound[0].name, screensFound[0].description);
+      return;
+    }
+
+    const projectId = selectedProject.id;
+    const projectName = selectedProject.name;
+
+    // RETIRED — the "no locked design yet, pick one before the rest of the batch" branch no
+    // longer applies: XmlScreenRenderer renders any XML the same deterministic way, so there's
+    // no visual variant to choose between anymore. Every batch just runs straight through as a
+    // background job now. Kept commented out, not deleted.
+    // if (!selectedProject.ui_theme) {
+    //   setNewScreensGenerating(true); setNewScreensError("");
+    //   try {
+    //     const { screenId, xml } = await _createScreenAndXml({ name: screensFound[0].name, description: screensFound[0].description });
+    //     const variantsRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html-variants`, { xml, frontend_lang: frontendLang });
+    //     setShowNewScreensModal(false);
+    //     setNewScreensPrompt(""); setNewScreensDetected([]); setNewScreensUnresolved([]);
+    //     setNewScreensGenerating(false);
+    //     setScreenVariants(variantsRes.data.variants || []);
+    //     setVariantPickerError("");
+    //     setShowVariantPicker(true);
+    //     setBatchPickerCtx({ projectId, projectName, screenId, xml, name: screensFound[0].name, screensFound });
+    //   } catch (err) {
+    //     setNewScreensError(err.response?.data?.detail || "Screen generation failed");
+    //     setNewScreensGenerating(false);
+    //   }
+    //   return;
+    // }
+
+    // The batch runs as a background job, closing the modal immediately instead of blocking the
+    // whole app behind its spinner for however long N screens take.
+    setShowNewScreensModal(false);
+    setNewScreensPrompt(""); setNewScreensDetected([]); setNewScreensUnresolved([]);
+    setNewScreensGenerating(false);
+    const jobId = startBgJob(projectId, projectName, null, `Generating ${screensFound.length} screens...`);
+    await _continueBatch(jobId, projectId, screensFound, 0, [], null);
+  };
+
+  // RETIRED — existed to lock project.ui_theme from a picked design variant and finish that
+  // screen's backend/frontend code. No longer reachable (batchPickerCtx is never set now — see
+  // _runNewScreensBatch above). Kept commented out, not deleted.
+  // const handleBatchPickVariant = async (html, label) => {
+  //   if (!batchPickerCtx) return;
+  //   const { projectId, projectName, screenId, xml, name, screensFound } = batchPickerCtx;
+  //   setVariantPicking(true); setVariantPickerError("");
+  //   try {
+  //     const lockThemeDensity = /dense/i.test(label || "") ? "DENSE" : "CLEAN";
+  //     _syncScreens((await api.put(`/projects/${projectId}/screens/${screenId}`, { html, lock_theme_density: lockThemeDensity })).data);
+  //     _syncScreens((await api.post(`/projects/${projectId}/screens/${screenId}/generate-api`, { xml })).data);
+  //
+  //     setShowVariantPicker(false);
+  //     setScreenVariants([]);
+  //     setBatchPickerCtx(null);
+  //
+  //     const jobId = startBgJob(projectId, projectName, null, `Generating ${screensFound.length} screens...`);
+  //     await _continueBatch(jobId, projectId, screensFound, 1, [name], null);
+  //   } catch (err) {
+  //     const msg = err.response?.data?.detail || "Failed to save the picked design";
+  //     setVariantPickerError(msg);
+  //     pushNotification(`Screen batch failed: ${msg}`, "error");
+  //   } finally {
+  //     setVariantPicking(false);
+  //   }
+  // };
 
   const handleDetectNewScreens = async () => {
     if (!newScreensPrompt.trim()) return;
@@ -764,56 +845,54 @@ export default function Dashboard() {
     _runNewScreensBatch(newScreensDetected);
   };
 
-  const handlePickVariant = async (html, label) => {
-    if (!activeScreenId) return;
-    const screenId = activeScreenId;
-    const projectId = selectedProject.id;
-    setVariantPicking(true); setVariantPickerError("");
-    // The picker modal blocks all other interaction while open, so up to this point the user
-    // is guaranteed still on this screen — but closing it below lets them navigate away before
-    // the backend/frontend code generation tail finishes, so that part still needs a job +
-    // isLiveScreen gating (already built into _finishStudioGenerate).
-    const jobId = startBgJob(projectId, selectedProject.name, screenId, `Finishing "${screenName || "screen"}"...`);
-    try {
-      // Committing to this variant is what locks the project's shared theme (see
-      // routes/projects.py update_screen) — only sent when the project doesn't already have
-      // one; the backend itself no-ops this once ui_theme is set, so it's safe to always send.
-      const lockThemeDensity = /dense/i.test(label || "") ? "DENSE" : "CLEAN";
-      _syncScreens((await api.put(`/projects/${projectId}/screens/${screenId}`, { html, lock_theme_density: lockThemeDensity })).data);
-      if (isLiveScreen(screenId)) {
-        setScreenHtml(html);
-        screenHtmlSavedRef.current = html;
-        setShowVariantPicker(false);
-        setScreenVariants([]);
-        setStudioGenerating(true);
-      }
-      await _finishStudioGenerate(screenId, screenXml);
-      if (isLiveScreen(screenId)) setStudioTab("preview");
-      finishBgJob(jobId, "done");
-      pushNotification(`"${screenName || "Screen"}" is ready.`, "success");
-    } catch (err) {
-      const msg = err.response?.data?.detail || "Failed to save the picked design";
-      if (isLiveScreen(screenId)) setVariantPickerError(msg);
-      finishBgJob(jobId, "error", { error: msg });
-      pushNotification(`"${screenName || "Screen"}" failed: ${msg}`, "error");
-    } finally {
-      setVariantPicking(false);
-      if (isLiveScreen(screenId)) { setStudioGenerating(false); setStudioStep(""); }
-    }
-  };
+  // RETIRED — variant picker gone (screens render live/deterministically from XML now). Kept
+  // commented out, not deleted.
+  // const handlePickVariant = async (html, label) => {
+  //   if (!activeScreenId) return;
+  //   const screenId = activeScreenId;
+  //   const projectId = selectedProject.id;
+  //   setVariantPicking(true); setVariantPickerError("");
+  //   const jobId = startBgJob(projectId, selectedProject.name, screenId, `Finishing "${screenName || "screen"}"...`);
+  //   try {
+  //     const lockThemeDensity = /dense/i.test(label || "") ? "DENSE" : "CLEAN";
+  //     _syncScreens((await api.put(`/projects/${projectId}/screens/${screenId}`, { html, lock_theme_density: lockThemeDensity })).data);
+  //     if (isLiveScreen(screenId)) {
+  //       setScreenHtml(html);
+  //       screenHtmlSavedRef.current = html;
+  //       setShowVariantPicker(false);
+  //       setScreenVariants([]);
+  //       setStudioGenerating(true);
+  //     }
+  //     await _finishStudioGenerate(screenId, screenXml);
+  //     if (isLiveScreen(screenId)) setStudioTab("preview");
+  //     finishBgJob(jobId, "done");
+  //     pushNotification(`"${screenName || "Screen"}" is ready.`, "success");
+  //   } catch (err) {
+  //     const msg = err.response?.data?.detail || "Failed to save the picked design";
+  //     if (isLiveScreen(screenId)) setVariantPickerError(msg);
+  //     finishBgJob(jobId, "error", { error: msg });
+  //     pushNotification(`"${screenName || "Screen"}" failed: ${msg}`, "error");
+  //   } finally {
+  //     setVariantPicking(false);
+  //     if (isLiveScreen(screenId)) { setStudioGenerating(false); setStudioStep(""); }
+  //   }
+  // };
 
-  const handleRegenerateVariants = async () => {
-    if (!activeScreenId || !screenXml) return;
-    setVariantPicking(true); setVariantPickerError("");
-    try {
-      const variantsRes = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-html-variants`, { xml: screenXml, frontend_lang: frontendLang });
-      setScreenVariants(variantsRes.data.variants || []);
-    } catch (err) {
-      setVariantPickerError(err.response?.data?.detail || "Failed to generate new options");
-    } finally {
-      setVariantPicking(false);
-    }
-  };
+  // const handleRegenerateVariants = async () => {
+  //   const projectId = batchPickerCtx ? batchPickerCtx.projectId : selectedProject.id;
+  //   const screenId = batchPickerCtx ? batchPickerCtx.screenId : activeScreenId;
+  //   const xml = batchPickerCtx ? batchPickerCtx.xml : screenXml;
+  //   if (!screenId || !xml) return;
+  //   setVariantPicking(true); setVariantPickerError("");
+  //   try {
+  //     const variantsRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-html-variants`, { xml, frontend_lang: frontendLang });
+  //     setScreenVariants(variantsRes.data.variants || []);
+  //   } catch (err) {
+  //     setVariantPickerError(err.response?.data?.detail || "Failed to generate new options");
+  //   } finally {
+  //     setVariantPicking(false);
+  //   }
+  // };
 
   // Iterative refinement chat, scoped to the currently selected screen. Runs once the
   // basic version exists (screenXml is set). Only updates XML/HTML on each message —
@@ -831,9 +910,9 @@ export default function Dashboard() {
       const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/refine-ui`, { instruction });
       const parsed = _syncScreens(res.data);
       const screen = parsed.find(s => s.id === activeScreenId);
+      // refine-ui's HTML side-effect is retired (see routes/projects.py) — XmlScreenRenderer
+      // re-renders live off the refreshed screenXml below, no separate HTML string needed.
       setScreenXml(screen?.xml || "");
-      setScreenHtml(screen?.html || "");
-      setScreenApi(""); setStudioEndpoints(null);
       setScreenChat(screen?.ui_chat || []);
     } catch (err) {
       setStudioError(err.response?.data?.detail || "Couldn't apply that change");
@@ -868,28 +947,29 @@ export default function Dashboard() {
     return null;
   };
 
-  const handleLoadEndpoints = async () => {
-    if (!screenXml || !activeScreenId) return;
-    setStudioEndpointsLoading(true); setStudioError("");
-    try {
-      const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-api`, { xml: screenXml });
-      const parsed = _syncScreens(res.data);
-      const apiCode = parsed.find(s => s.id === activeScreenId)?.api || "";
-      setScreenApi(apiCode);
-      const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
-      let normalized = null;
-      if (contractsFile) {
-        try { normalized = normalizeEndpoints(JSON.parse(contractsFile.code)); }
-        catch { normalized = null; }
-      }
-      setStudioEndpoints(normalized);
-      if (!normalized) setStudioError("Generated an API, but couldn't find a readable endpoint list in the response — check the raw code in the Validations/User Interface tab.");
-    } catch (err) {
-      setStudioError(err.response?.data?.detail || "API generation failed");
-    } finally {
-      setStudioEndpointsLoading(false);
-    }
-  };
+  // RETIRED — only existed to call generate-api for the REST Endpoints tab. Kept commented out.
+  // const handleLoadEndpoints = async () => {
+  //   if (!screenXml || !activeScreenId) return;
+  //   setStudioEndpointsLoading(true); setStudioError("");
+  //   try {
+  //     const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-api`, { xml: screenXml });
+  //     const parsed = _syncScreens(res.data);
+  //     const apiCode = parsed.find(s => s.id === activeScreenId)?.api || "";
+  //     setScreenApi(apiCode);
+  //     const contractsFile = parseFiles(apiCode).find(f => f.name.toLowerCase().includes("contract"));
+  //     let normalized = null;
+  //     if (contractsFile) {
+  //       try { normalized = normalizeEndpoints(JSON.parse(contractsFile.code)); }
+  //       catch { normalized = null; }
+  //     }
+  //     setStudioEndpoints(normalized);
+  //     if (!normalized) setStudioError("Generated an API, but couldn't find a readable endpoint list in the response — check the raw code in the Validations/User Interface tab.");
+  //   } catch (err) {
+  //     setStudioError(err.response?.data?.detail || "API generation failed");
+  //   } finally {
+  //     setStudioEndpointsLoading(false);
+  //   }
+  // };
 
   const loadStudioData = async (entityName) => {
     if (!entityName || !selectedProject) return;
@@ -924,6 +1004,18 @@ export default function Dashboard() {
       a.download = `${(selectedProject.name || "schema").toLowerCase().replace(/\s+/g, "_")}_schema.${fmt}`;
       a.click();
     } catch (err) { setError(err.response?.data?.detail || "Download failed"); }
+  };
+
+  const handleCreateNeo4jDb = async () => {
+    setNeo4jCreating(true); setNeo4jError(""); setNeo4jResult(null);
+    try {
+      const res = await api.post(`/projects/${selectedProject.id}/neo4j/create-db`);
+      setNeo4jResult(res.data);
+    } catch (err) {
+      setNeo4jError(err.response?.data?.detail || "Neo4j schema creation failed");
+    } finally {
+      setNeo4jCreating(false);
+    }
   };
 
   const handleClearValidation = async () => {
@@ -1008,19 +1100,31 @@ export default function Dashboard() {
     // running, its next isLiveScreen-gated update will correctly flip this back to true.
     setStudioGenerating(false); setStudioStep("");
 
-    // A background generation may have finished offering 3 design variants for THIS screen
-    // while the user was elsewhere (see handleStudioGenerate) — if they never got saved (no
-    // html yet) and the user is opening this screen now, pick up where that job left off
-    // instead of silently losing the work.
-    if (!screen.html) {
-      const pending = bgJobs.find(j => j.pendingVariantsFor === screen.id && j.status === "done");
-      if (pending) {
-        setScreenVariants(pending.variants || []);
-        setVariantPickerError("");
-        setShowVariantPicker(true);
-        setBgJobs(jobs => jobs.filter(j => j.id !== pending.id));
-      }
-    }
+    // RETIRED — the variant picker (3 AI-generated designs to pick from) no longer exists;
+    // screens render live/deterministically from XML now (see XmlScreenRenderer). Kept
+    // commented out, not deleted.
+    // if (!screen.html) {
+    //   const pending = bgJobs.find(j => j.pendingVariantsFor === screen.id && j.status === "done");
+    //   if (pending) {
+    //     setScreenVariants(pending.variants || []);
+    //     setVariantPickerError("");
+    //     setShowVariantPicker(true);
+    //     setBgJobs(jobs => jobs.filter(j => j.id !== pending.id));
+    //   }
+    // }
+  };
+
+  // XmlScreenRenderer's onNavigate — a <navigation> screen's nav card was clicked. Native React
+  // now (no iframe/postMessage boundary, replaces the old TDIDE_NAVIGATE bridge), so this is
+  // just a direct lookup + call. The vocabulary requires targetScreen to exactly match a real
+  // screen name, but that's not always honored in practice (e.g. targetScreen="TaskList" for an
+  // actual screen named "Task List") — fall back to a whitespace/case-insensitive match rather
+  // than silently doing nothing when the exact match misses.
+  const handleXmlNavigate = (targetScreenName) => {
+    const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const wanted = norm(targetScreenName);
+    const target = screensRef.current.find(s => s.name === targetScreenName) || screensRef.current.find(s => norm(s.name) === wanted);
+    if (target) { handleSelectScreen(target); setStudioTab("preview"); }
   };
 
   const handleNewScreen = () => {
@@ -1046,6 +1150,8 @@ export default function Dashboard() {
   };
 
   // Generate XML + HTML for one screen entry (create it first if screenId is null)
+  // Legacy per-screen pipeline (activeSection === "ui"). HTML generation retired — this now
+  // stops at XML, same as the Studio's _createScreenAndXml; XmlScreenRenderer renders it live.
   const _generateOneScreen = async (screenId, name, desc) => {
     if (!screenId) {
       const res = await api.post(`/projects/${selectedProject.id}/screens`, { name, description: desc });
@@ -1059,23 +1165,16 @@ export default function Dashboard() {
     }
 
     const xmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-xml`, { description: desc });
-    let parsed = _syncScreens(xmlRes.data);
+    const parsed = _syncScreens(xmlRes.data);
     const xml = parsed.find(s => s.id === screenId)?.xml || "";
-
-    let html = "";
-    if (xml) {
-      const htmlRes = await api.post(`/projects/${selectedProject.id}/screens/${screenId}/generate-html`, { xml, frontend_lang: frontendLang });
-      parsed = _syncScreens(htmlRes.data);
-      html = parsed.find(s => s.id === screenId)?.html || "";
-    }
-    return { screenId, name, desc, xml, html };
+    return { screenId, name, desc, xml };
   };
 
   const handleGenerateScreen = async () => {
     if (!screenDesc.trim()) { setError("Enter a screen description first"); return; }
     setError("");
     setScreenXmlLoading(true);
-    setScreenXml(""); setScreenHtml(""); setScreenApi("");
+    setScreenXml("");
 
     // Step 1: ask the AI whether this description implies one screen or several
     let intents = [{ name: screenName.trim() || screenDesc.substring(0, 40).trim(), description: screenDesc }];
@@ -1084,8 +1183,8 @@ export default function Dashboard() {
       if (intentRes.data?.screens?.length) intents = intentRes.data.screens;
     } catch (e) { /* fall back to treating it as a single screen */ }
 
-    // Step 2: create/update + generate (XML then HTML) for each detected screen.
-    // The first intent reuses the currently open screen (if any); extra intents become new screens.
+    // Step 2: create/update + generate XML for each detected screen. The first intent reuses
+    // the currently open screen (if any); extra intents become new screens.
     let results = [];
     try {
       for (let i = 0; i < intents.length; i++) {
@@ -1094,14 +1193,13 @@ export default function Dashboard() {
         const desc = item.description || screenDesc;
         const screenId = i === 0 ? activeScreenId : null;
         results.push(await _generateOneScreen(screenId, name, desc));
-        if (i === 0) setScreenHtmlLoading(true);
       }
     } catch (err) {
       setError(err.response?.data?.detail || "Screen generation failed");
-      setScreenXmlLoading(false); setScreenHtmlLoading(false);
+      setScreenXmlLoading(false);
       return;
     }
-    setScreenXmlLoading(false); setScreenHtmlLoading(false);
+    setScreenXmlLoading(false);
 
     // Show the first generated screen in the editor
     const first = results[0];
@@ -1109,8 +1207,7 @@ export default function Dashboard() {
     setScreenName(first.name);
     setScreenDesc(first.desc);
     setScreenXml(first.xml);
-    setScreenHtml(first.html);
-    setScreenTab(first.html ? "html" : "xml");
+    setScreenTab("xml");
 
     if (results.length > 1) {
       setSaveMsg(`Generated ${results.length} screens: ${results.map(r => r.name).join(", ")}`);
@@ -1118,31 +1215,33 @@ export default function Dashboard() {
     }
   };
 
-  const handleRegenHtml = async () => {
-    if (!screenXml || !activeScreenId) return;
-    setScreenHtmlLoading(true); setError("");
-    try {
-      const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-html`, { xml: screenXml, frontend_lang: frontendLang });
-      const parsed = _syncScreens(res.data);
-      const updated = parsed.find(s => s.id === activeScreenId);
-      setScreenHtml(updated?.html || "");
-      setScreenTab("html");
-    } catch (err) { setError(err.response?.data?.detail || "HTML generation failed"); }
-    finally { setScreenHtmlLoading(false); }
-  };
+  // RETIRED — legacy "Regenerate HTML"/"Generate REST API" buttons, HTML/API generation gone.
+  // Kept commented out, not deleted.
+  // const handleRegenHtml = async () => {
+  //   if (!screenXml || !activeScreenId) return;
+  //   setScreenHtmlLoading(true); setError("");
+  //   try {
+  //     const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-html`, { xml: screenXml, frontend_lang: frontendLang });
+  //     const parsed = _syncScreens(res.data);
+  //     const updated = parsed.find(s => s.id === activeScreenId);
+  //     setScreenHtml(updated?.html || "");
+  //     setScreenTab("html");
+  //   } catch (err) { setError(err.response?.data?.detail || "HTML generation failed"); }
+  //   finally { setScreenHtmlLoading(false); }
+  // };
 
-  const handleGenScreenApi = async () => {
-    if (!screenXml || !activeScreenId) return;
-    setScreenApiLoading(true); setError("");
-    try {
-      const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-api`, { xml: screenXml });
-      const parsed = _syncScreens(res.data);
-      const updated = parsed.find(s => s.id === activeScreenId);
-      setScreenApi(updated?.api || "");
-      setScreenTab("api");
-    } catch (err) { setError(err.response?.data?.detail || "API generation failed"); }
-    finally { setScreenApiLoading(false); }
-  };
+  // const handleGenScreenApi = async () => {
+  //   if (!screenXml || !activeScreenId) return;
+  //   setScreenApiLoading(true); setError("");
+  //   try {
+  //     const res = await api.post(`/projects/${selectedProject.id}/screens/${activeScreenId}/generate-api`, { xml: screenXml });
+  //     const parsed = _syncScreens(res.data);
+  //     const updated = parsed.find(s => s.id === activeScreenId);
+  //     setScreenApi(updated?.api || "");
+  //     setScreenTab("api");
+  //   } catch (err) { setError(err.response?.data?.detail || "API generation failed"); }
+  //   finally { setScreenApiLoading(false); }
+  // };
 
   const downloadCode = (code, name) => {
     const a = document.createElement("a");
@@ -1387,6 +1486,8 @@ export default function Dashboard() {
               Frontend
             </a>
           )}
+          {/* RETIRED — GitHub push depended entirely on generate-api's output (backend/frontend
+              code), which is retired. Kept commented out, not deleted.
           {selectedProject && (
             <button className="btn-secondary" disabled={pushingGithub} onClick={async () => {
               setPushingGithub(true);
@@ -1402,6 +1503,7 @@ export default function Dashboard() {
               {pushingGithub ? "Pushing..." : "↑ Push to GitHub"}
             </button>
           )}
+          */}
           {bgJobs.length > 0 && (
             <div style={{ position: "relative" }}>
               <button className="btn-secondary" onClick={() => setShowBgJobsDropdown(v => !v)}
@@ -1644,9 +1746,12 @@ export default function Dashboard() {
                       <div style={{ display: "flex", flexWrap: "wrap", columnGap: 22, rowGap: 4, padding: "8px 20px 0", borderBottom: "1px solid var(--st-border)", flexShrink: 0 }}>
                         {[
                           { key: "preview", label: "UI Preview" },
-                          { key: "frontend", label: "Frontend Code" },
-                          { key: "backend", label: "Backend Code" },
-                          { key: "endpoints", label: "REST Endpoints" },
+                          { key: "xml", label: "XML Definition" },
+                          // RETIRED — Frontend/Backend Code and REST Endpoints only ever showed
+                          // generate-api's output. Kept commented out, not deleted.
+                          // { key: "frontend", label: "Frontend Code" },
+                          // { key: "backend", label: "Backend Code" },
+                          // { key: "endpoints", label: "REST Endpoints" },
                           { key: "entities", label: "Database Entities" },
                           { key: "data", label: "Data" },
                           { key: "validations", label: "Validations" },
@@ -1655,7 +1760,6 @@ export default function Dashboard() {
                             style={{ flexShrink: 0 }}
                             onClick={() => {
                               setStudioTab(t.key);
-                              if (t.key === "endpoints" && !screenApi && screenXml) handleLoadEndpoints();
                               if (t.key === "data" && !studioDataLoading) {
                                 const preferred = studioDataEntity || studioPrimaryEntities[0] || entities?.tables?.[0]?.name;
                                 if (preferred) loadStudioData(preferred);
@@ -1664,22 +1768,30 @@ export default function Dashboard() {
                             {t.label}
                           </button>
                         ))}
+                        {/* RETIRED — "🎨 Colors" recolored the AI-generated HTML string client-side;
+                            nothing left to recolor once screens render live from XML. Kept commented out.
                         {studioTab === "preview" && screenHtml && (
                           <button className="studio-btn-secondary" style={{ marginLeft: dbPreviewStatus ? 0 : "auto", alignSelf: "center", flexShrink: 0, fontSize: 12, padding: "4px 10px" }}
                             onClick={() => setShowColorPicker(v => !v)}>
                             🎨 Colors
                           </button>
                         )}
+                        */}
                         {dbPreviewStatus && (
                           <span className="studio-pill studio-pill-soft" style={{ marginLeft: "auto", alignSelf: "center", flexShrink: 0,
                               color: dbPreviewStatus.connected ? "var(--st-success, #16a34a)" : "var(--st-muted)" }}
                             title={dbPreviewStatus.connected
-                              ? `Reading/writing real rows in this project's Postgres schema (${dbPreviewStatus.entity})`
-                              : `No rows yet in the real DB for ${dbPreviewStatus.entity} — showing the screen's sample data`}>
-                            {dbPreviewStatus.connected ? "● Connected to DB" : "○ Sample data"}
+                              ? (dbPreviewStatus.hasRows
+                                  ? `Reading/writing real rows in this project's Postgres schema (${dbPreviewStatus.entity})`
+                                  : `Connected to this project's real Postgres schema (${dbPreviewStatus.entity}) — no rows saved yet`)
+                              : `Couldn't reach the real DB for ${dbPreviewStatus.entity} — showing the screen's sample data`}>
+                            {dbPreviewStatus.connected
+                              ? (dbPreviewStatus.hasRows ? "● Connected to DB" : "● Connected to DB — no rows yet")
+                              : "○ Sample data"}
                           </span>
                         )}
                       </div>
+                      {/* RETIRED along with the "🎨 Colors" button above — nothing left to recolor.
                       {studioTab === "preview" && showColorPicker && screenHtml && (
                         <ColorPalettePopover
                           html={screenHtml}
@@ -1692,13 +1804,16 @@ export default function Dashboard() {
                           onClose={() => setShowColorPicker(false)}
                         />
                       )}
+                      */}
 
                       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
                         {studioTab === "preview" && (
-                          screenHtml ? (
-                            <iframe key={`${activeScreenId}-${screenHtml.length}`} srcDoc={screenHtml}
-                              style={{ width: "100%", height: "100%", minHeight: 480, border: "1px solid var(--st-border)", borderRadius: 8 }}
-                              title="UI Preview" sandbox="allow-scripts allow-forms" />
+                          screenXml ? (
+                            <AppShell projectName={selectedProject?.name} screens={screens} activeScreenId={activeScreenId} onSelectScreen={handleSelectScreen}>
+                              <div key={activeScreenId} style={{ height: "100%" }}>
+                                <ServerScreenRenderer projectId={selectedProject?.id} screenId={activeScreenId} />
+                              </div>
+                            </AppShell>
                           ) : (
                             <div style={{ textAlign: "center", color: "var(--st-muted)", fontSize: 13, padding: 60 }}>
                               {studioGenerating ? "Generating..." : 'Define a screen on the left and click "Generate Screen" to see a live preview here.'}
@@ -1706,6 +1821,23 @@ export default function Dashboard() {
                           )
                         )}
 
+                        {studioTab === "xml" && (
+                          screenXml ? (
+                            <>
+                              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                                <button className="studio-btn-secondary" style={{ fontSize: 12, padding: "4px 10px" }}
+                                  onClick={() => downloadCode(screenXml, `${screenName || "screen"}.xml`)}>Download XML</button>
+                              </div>
+                              <SyntaxHighlighter language="xml" style={oneDark} customStyle={{ margin: 0, borderRadius: 8, fontSize: 13, lineHeight: 1.6, padding: "16px" }} showLineNumbers wrapLongLines>{screenXml}</SyntaxHighlighter>
+                            </>
+                          ) : (
+                            <div style={{ textAlign: "center", color: "var(--st-muted)", fontSize: 13, padding: 60 }}>No XML yet — generate a screen first.</div>
+                          )
+                        )}
+
+                        {/* RETIRED — Frontend/Backend Code and REST Endpoints tabs only ever showed
+                            generate-api's output; their tab buttons are gone above so these are
+                            unreachable, kept commented out rather than deleted.
                         {studioTab === "frontend" && (
                           splitApiBundle(screenApi).frontend ? (
                             <MultiFileCode title={`Frontend Code (${frontendLang})`} code={splitApiBundle(screenApi).frontend} parseFiles={parseFiles} syntaxLang={syntaxLang} downloadCode={downloadCode} />
@@ -1745,6 +1877,7 @@ export default function Dashboard() {
                             </div>
                           )
                         )}
+                        */}
 
                         {studioTab === "entities" && (
                           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1957,6 +2090,8 @@ export default function Dashboard() {
                     </div>
                   )}
 
+                  {/* RETIRED — 3-AI-generated-design picker has no meaning once screens render
+                      live/deterministically from XML (XmlScreenRenderer). Kept commented out.
                   {showVariantPicker && (
                     <div style={{ position: "fixed", inset: 0, background: "rgba(31,27,46,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
                       <div className="studio-card" style={{ padding: 24, width: "min(900px, 92vw)", maxHeight: "88vh", overflowY: "auto" }}>
@@ -1973,14 +2108,17 @@ export default function Dashboard() {
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 16 }}>
                             {screenVariants.map((v, i) => (
                               <div key={i} style={{ border: "1px solid var(--st-border)", borderRadius: 10, overflow: "hidden", background: "var(--st-bg)" }}>
-                                <div style={{ position: "relative", height: 220, overflow: "hidden", borderBottom: "1px solid var(--st-border)" }}>
+                                <div style={{ position: "relative", height: 220, overflow: "hidden", borderBottom: "1px solid var(--st-border)", background: "#fff" }}>
                                   <iframe srcDoc={v.html} title={v.label} tabIndex={-1}
-                                    style={{ width: 300, height: 280, border: "none", pointerEvents: "none" }} />
+                                    style={{
+                                      width: VARIANT_PREVIEW_VIRTUAL_W, height: VARIANT_PREVIEW_VIRTUAL_H, border: "none", pointerEvents: "none",
+                                      transform: `scale(${VARIANT_PREVIEW_SCALE})`, transformOrigin: "top left",
+                                    }} />
                                 </div>
                                 <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                                   <div style={{ fontWeight: 600, fontSize: 13 }}>{v.label}</div>
                                   <button className="studio-btn-primary" style={{ fontSize: 12, padding: "6px 10px" }}
-                                    disabled={variantPicking} onClick={() => handlePickVariant(v.html, v.label)}>
+                                    disabled={variantPicking} onClick={() => (batchPickerCtx ? handleBatchPickVariant : handlePickVariant)(v.html, v.label)}>
                                     {variantPicking ? <><span className="spinner" /> Applying...</> : "Use this design"}
                                   </button>
                                 </div>
@@ -1989,7 +2127,10 @@ export default function Dashboard() {
                           </div>
                         )}
                         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                          <button className="studio-btn-secondary" disabled={variantPicking} onClick={() => { setShowVariantPicker(false); setScreenVariants([]); }}>Cancel</button>
+                          <button className="studio-btn-secondary" disabled={variantPicking} onClick={() => {
+                            if (batchPickerCtx) pushNotification(`Only "${batchPickerCtx.name}" was created — pick a design to generate the rest of the batch.`, "info");
+                            setShowVariantPicker(false); setScreenVariants([]); setBatchPickerCtx(null);
+                          }}>Cancel</button>
                           <button className="studio-btn-secondary" disabled={variantPicking || screenVariants.length === 0} onClick={handleRegenerateVariants}>
                             🔄 3 new options
                           </button>
@@ -1997,6 +2138,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                   )}
+                  */}
 
                   {/* Schema Assistant — per-table chat + tabbed detail editor */}
                   {schemaAssistantTable && (() => {
@@ -2288,7 +2430,39 @@ export default function Dashboard() {
                         </span>
                         <button className="btn-primary" onClick={() => handleDownload("sql")} style={{ fontSize: 13, padding: "8px 16px" }}>Download SQL</button>
                         <button className="btn-purple" onClick={() => handleDownload("json")} style={{ fontSize: 13, padding: "8px 16px" }}>Download JSON</button>
+                        <button className="btn-purple" onClick={handleCreateNeo4jDb} disabled={neo4jCreating} style={{ fontSize: 13, padding: "8px 16px", opacity: neo4jCreating ? 0.6 : 1 }}
+                          title="Create this project's tables in Neo4j (constraints and indexes under its own label prefix)">
+                          {neo4jCreating ? <><span className="spinner" /> Creating...</> : "Create DB (Neo4j)"}
+                        </button>
                       </div>
+
+                      {(neo4jResult || neo4jError) && (
+                        <div className="card" style={{
+                          padding: 16, marginTop: 16,
+                          background: neo4jError ? "rgba(220,38,38,0.08)" : "rgba(34,197,94,0.08)",
+                          border: neo4jError ? "1px solid rgba(220,38,38,0.3)" : "1px solid rgba(34,197,94,0.3)",
+                        }}>
+                          {neo4jError ? (
+                            <div style={{ fontSize: 13, color: "#f87171" }}>{neo4jError}</div>
+                          ) : (
+                            <>
+                              <div style={{ fontSize: 13, color: "#e0e0e0", marginBottom: neo4jResult.statements?.length ? 10 : 0 }}>{neo4jResult.summary}</div>
+                              {neo4jResult.statements?.length > 0 && (
+                                <details>
+                                  <summary style={{ fontSize: 12, color: "#7a7a7a", cursor: "pointer" }}>
+                                    {neo4jResult.statements.length} Cypher statement{neo4jResult.statements.length === 1 ? "" : "s"} run
+                                  </summary>
+                                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+                                    {neo4jResult.statements.map((s, i) => (
+                                      <code key={i} style={{ fontSize: 11.5, color: "#a5a5a5", background: "#1e1e1e", padding: "6px 10px", borderRadius: 6, whiteSpace: "pre-wrap" }}>{s}</code>
+                                    ))}
+                                  </div>
+                                </details>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      )}
 
                       <div className="card" style={{ padding: 20, marginTop: 16 }}>
                         <label style={S.lbl}>Refine Architecture</label>
@@ -2383,40 +2557,23 @@ export default function Dashboard() {
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                         <button className="btn-primary" onClick={handleGenerateScreen}
-                          disabled={screenXmlLoading || screenHtmlLoading || !screenDesc.trim()}
-                          style={{ opacity: (screenXmlLoading || screenHtmlLoading || !screenDesc.trim()) ? 0.5 : 1 }}>
+                          disabled={screenXmlLoading || !screenDesc.trim()}
+                          style={{ opacity: (screenXmlLoading || !screenDesc.trim()) ? 0.5 : 1 }}>
                           {screenXmlLoading ? <><span className="spinner" /> Building XML...</>
-                            : screenHtmlLoading ? <><span className="spinner" /> Rendering HTML...</>
                             : activeScreenId ? "Regenerate Screen" : "Generate Screen"}
                         </button>
-                        {screenXml && activeScreenId && (
-                          <button className="btn-secondary" onClick={handleRegenHtml} disabled={screenHtmlLoading}
-                            style={{ fontSize: 12, padding: "6px 14px" }}>
-                            {screenHtmlLoading ? <><span className="spinner" /> Regenerating...</> : "Regenerate HTML"}
-                          </button>
-                        )}
-                        {screenXml && activeScreenId && (
-                          <button className="btn-purple" onClick={handleGenScreenApi} disabled={screenApiLoading}
-                            style={{ fontSize: 12, padding: "6px 14px" }}>
-                            {screenApiLoading ? <><span className="spinner" /> Generating...</> : "Generate REST API"}
-                          </button>
-                        )}
-                        {(screenXmlLoading || screenHtmlLoading) && (
-                          <span style={{ fontSize: 12, color: "#7a7a7a" }}>
-                            {screenXmlLoading ? "Step 1/2: generating XML..." : "Step 2/2: converting to HTML..."}
-                          </span>
-                        )}
+                        {/* RETIRED — "Regenerate HTML"/"Generate REST API" buttons, HTML/API
+                            generation gone; XmlScreenRenderer renders live from XML alone. */}
                       </div>
                     </div>
 
                     {/* Output tabs */}
-                    {(screenXml || screenHtml || screenApi) && (
+                    {screenXml && (
                       <div className="card" style={{ overflow: "hidden" }}>
                         <div style={{ display: "flex", borderBottom: "1px solid #333", background: "#1e1e1e" }}>
                           {[
+                            { key: "preview", label: "Live Preview", ready: !!screenXml },
                             { key: "xml", label: "XML Definition", ready: !!screenXml },
-                            { key: "html", label: "HTML Preview", ready: !!screenHtml },
-                            { key: "api", label: "REST API", ready: !!screenApi },
                           ].map(t => (
                             <button key={t.key} onClick={() => setScreenTab(t.key)} style={{
                               padding: "10px 20px", fontSize: 13, fontWeight: screenTab === t.key ? 600 : 400, cursor: "pointer",
@@ -2428,39 +2585,12 @@ export default function Dashboard() {
                           ))}
                         </div>
 
-                        {/* HTML tab */}
-                        {screenTab === "html" && (
-                          screenHtml ? (
-                            <>
-                              <div style={{ display: "flex", gap: 8, padding: "10px 16px", borderBottom: "1px solid #333", background: "#1e1e1e" }}>
-                                <button className="btn-secondary" onClick={() => setShowScreenCode(!showScreenCode)} style={{ fontSize: 12, padding: "6px 14px" }}>
-                                  {showScreenCode ? "Show Preview" : "Show Code"}
-                                </button>
-                                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                                  {!showScreenCode && (
-                                    <button className="btn-secondary" onClick={() => {
-                                      const closeBtn = `<button onclick="window.close()" style="position:fixed;top:14px;left:14px;z-index:99999;background:#1e1e1e;color:#e0e0e0;border:1px solid #444;border-radius:6px;padding:6px 14px;font-size:13px;font-family:inherit;cursor:pointer;display:flex;align-items:center;gap:6px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">&#8592; Close Preview</button>`;
-                                      const injected = screenHtml.replace("</body>", closeBtn + "</body>");
-                                      const w = window.open("", "_blank");
-                                      w.document.write(injected);
-                                      w.document.close();
-                                    }} style={{ fontSize: 12, padding: "6px 14px" }}>Full Screen</button>
-                                  )}
-                                  <button className="btn-secondary" onClick={() => downloadCode(screenHtml, `${screenName || "screen"}.html`)}
-                                    style={{ fontSize: 12, padding: "6px 14px" }}>Download HTML</button>
-                                </div>
-                              </div>
-                              {showScreenCode
-                                ? <SyntaxHighlighter language="html" style={oneDark} customStyle={{ margin: 0, borderRadius: 0, fontSize: 13, lineHeight: 1.6, maxHeight: 600, padding: "16px" }} showLineNumbers wrapLongLines>{screenHtml}</SyntaxHighlighter>
-                                : <iframe srcDoc={screenHtml} style={{ width: "100%", minHeight: 600, border: "none" }} title="Preview" sandbox="allow-scripts allow-forms" />}
-                            </>
-                          ) : (
-                            <div style={{ padding: 40, textAlign: "center", color: "#7a7a7a" }}>
-                              {screenXml
-                                ? <button className="btn-primary" onClick={handleRegenHtml} disabled={screenHtmlLoading}>{screenHtmlLoading ? <><span className="spinner" /> Generating...</> : "Generate HTML from XML"}</button>
-                                : "Describe a screen and click Generate Screen"}
-                            </div>
-                          )
+                        {/* Live Preview tab — same server-rendered iframe as the Studio's own
+                            preview, no separate AI-generated HTML string anymore. */}
+                        {(screenTab === "preview" || screenTab === "html") && (
+                          <AppShell projectName={selectedProject?.name} screens={screens} activeScreenId={activeScreenId} onSelectScreen={handleSelectScreen}>
+                            <ServerScreenRenderer projectId={selectedProject?.id} screenId={activeScreenId} />
+                          </AppShell>
                         )}
 
                         {/* XML tab */}
@@ -2475,7 +2605,8 @@ export default function Dashboard() {
                           ) : <div style={{ padding: 40, textAlign: "center", color: "#7a7a7a" }}>No XML yet — click Generate Screen.</div>
                         )}
 
-                        {/* API tab */}
+                        {/* RETIRED — API tab only ever showed generate-api's output. Kept
+                            commented out, not deleted.
                         {screenTab === "api" && (
                           screenApi
                             ? <MultiFileCode title={`API Code (${selectedProject.language} + ${frontendLang})`} code={screenApi} parseFiles={parseFiles} syntaxLang={syntaxLang} downloadCode={downloadCode} />
@@ -2483,6 +2614,7 @@ export default function Dashboard() {
                                 {screenXml ? <button className="btn-purple" onClick={handleGenScreenApi} disabled={screenApiLoading}>{screenApiLoading ? <><span className="spinner" /> Generating...</> : `Generate ${selectedProject.language} + ${frontendLang} API`}</button> : "Generate XML first"}
                               </div>
                         )}
+                        */}
                       </div>
                     )}
                   </div>
