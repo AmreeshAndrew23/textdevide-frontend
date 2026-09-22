@@ -208,6 +208,9 @@ export default function Dashboard() {
   // instead of whatever it was when that effect last ran.
   const screensRef = useRef([]);
   useEffect(() => { screensRef.current = screens; }, [screens]);
+  const [screenSelectMode, setScreenSelectMode] = useState(false);
+  const [selectedScreenIds, setSelectedScreenIds] = useState(() => new Set());
+  const [deletingScreens, setDeletingScreens] = useState(false);
   const [activeScreenId, setActiveScreenId] = useState(null);
   // Background-generation jobs (see startBgJob below) read these instead of closing over
   // selectedProject/activeScreenId directly, so a job started for one project/screen can tell,
@@ -1171,6 +1174,37 @@ export default function Dashboard() {
     } catch (err) { setError(err.response?.data?.detail || "Delete failed"); }
   };
 
+  const toggleScreenSelectMode = () => {
+    setScreenSelectMode(m => !m);
+    setSelectedScreenIds(new Set());
+  };
+
+  const toggleScreenSelected = (screenId) => {
+    setSelectedScreenIds(prev => {
+      const next = new Set(prev);
+      if (next.has(screenId)) next.delete(screenId); else next.add(screenId);
+      return next;
+    });
+  };
+
+  const handleDeleteSelectedScreens = async () => {
+    if (!selectedScreenIds.size) return;
+    if (!window.confirm(`Delete ${selectedScreenIds.size} screen${selectedScreenIds.size === 1 ? "" : "s"}? This can't be undone.`)) return;
+    setDeletingScreens(true);
+    try {
+      const ids = [...selectedScreenIds];
+      const res = await api.post(`/projects/${selectedProject.id}/screens/batch-delete`, { screen_ids: ids });
+      _syncScreens(res.data);
+      if (ids.includes(activeScreenId)) handleNewScreen();
+      setSelectedScreenIds(new Set());
+      setScreenSelectMode(false);
+    } catch (err) {
+      setError(err.response?.data?.detail || "Delete failed");
+    } finally {
+      setDeletingScreens(false);
+    }
+  };
+
   // Generate XML + HTML for one screen entry (create it first if screenId is null)
   // Legacy per-screen pipeline (activeSection === "ui"). HTML generation retired — this now
   // stops at XML, same as the Studio's _createScreenAndXml; XmlScreenRenderer renders it live.
@@ -1614,20 +1648,51 @@ export default function Dashboard() {
                       {!entities?.tables?.length && <div style={{ fontSize: 12, color: "var(--st-muted)", padding: "4px 8px" }}>No entities yet</div>}
                       <div onClick={() => setShowNewEntityModal(true)} className="studio-sidebar-item" style={{ color: "var(--st-accent)", fontWeight: 600 }}>+ New entity from prompt</div>
 
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--st-muted)", letterSpacing: 0.6, margin: "18px 0 6px", padding: "0 8px" }}>SCREENS</div>
-                      {screens.map(s => (
-                        <div key={s.id} className={"studio-sidebar-item" + (activeScreenId === s.id ? " active" : "")} onClick={() => handleSelectScreen(s)}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>▪ {s.name}</span>
-                          <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete screen "${s.name}"? This can't be undone.`)) handleDeleteScreen(s.id); }}
-                            title="Delete screen"
-                            style={{ flexShrink: 0, background: "transparent", border: "none", color: "var(--st-muted)", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}>
-                            &times;
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "18px 0 6px", padding: "0 8px" }}>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: "var(--st-muted)", letterSpacing: 0.6 }}>SCREENS</span>
+                        {screens.length > 0 && (
+                          <button onClick={toggleScreenSelectMode} title={screenSelectMode ? "Cancel selecting" : "Select multiple screens to delete"}
+                            style={{ background: "none", border: "none", color: screenSelectMode ? "var(--st-accent)" : "var(--st-muted)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
+                            {screenSelectMode ? "Cancel" : "Select"}
+                          </button>
+                        )}
+                      </div>
+                      {screenSelectMode && (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 8px", marginBottom: 6 }}>
+                          <button onClick={() => setSelectedScreenIds(selectedScreenIds.size === screens.length ? new Set() : new Set(screens.map(s => s.id)))}
+                            style={{ background: "none", border: "none", color: "var(--st-muted)", cursor: "pointer", fontSize: 11 }}>
+                            {selectedScreenIds.size === screens.length ? "Deselect all" : "Select all"}
+                          </button>
+                          <button onClick={handleDeleteSelectedScreens} disabled={!selectedScreenIds.size || deletingScreens}
+                            style={{ background: "none", border: "none", color: selectedScreenIds.size ? "#ef4444" : "var(--st-muted)", cursor: selectedScreenIds.size ? "pointer" : "default", fontSize: 11, fontWeight: 600 }}>
+                            {deletingScreens ? "Deleting..." : `Delete (${selectedScreenIds.size})`}
                           </button>
                         </div>
+                      )}
+                      {screens.map(s => (
+                        <div key={s.id} className={"studio-sidebar-item" + (activeScreenId === s.id && !screenSelectMode ? " active" : "")}
+                          onClick={() => screenSelectMode ? toggleScreenSelected(s.id) : handleSelectScreen(s)}
+                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                            {screenSelectMode && (
+                              <input type="checkbox" checked={selectedScreenIds.has(s.id)} onChange={() => toggleScreenSelected(s.id)}
+                                onClick={e => e.stopPropagation()} style={{ flexShrink: 0, cursor: "pointer" }} />
+                            )}
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>▪ {s.name}</span>
+                          </span>
+                          {!screenSelectMode && (
+                            <button onClick={e => { e.stopPropagation(); if (window.confirm(`Delete screen "${s.name}"? This can't be undone.`)) handleDeleteScreen(s.id); }}
+                              title="Delete screen"
+                              style={{ flexShrink: 0, background: "transparent", border: "none", color: "var(--st-muted)", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}>
+                              &times;
+                            </button>
+                          )}
+                        </div>
                       ))}
-                      <div onClick={handleNewScreen} className="studio-sidebar-item" style={{ color: "var(--st-muted)" }}>+ New Screen</div>
-                      <div onClick={() => setShowNewScreensModal(true)} className="studio-sidebar-item" style={{ color: "var(--st-accent)", fontWeight: 600 }}>+ New Screen(s) from prompt</div>
+                      {!screenSelectMode && <>
+                        <div onClick={handleNewScreen} className="studio-sidebar-item" style={{ color: "var(--st-muted)" }}>+ New Screen</div>
+                        <div onClick={() => setShowNewScreensModal(true)} className="studio-sidebar-item" style={{ color: "var(--st-accent)", fontWeight: 600 }}>+ New Screen(s) from prompt</div>
+                      </>}
                     </div>
 
                     {/* MIDDLE PANEL */}
@@ -2653,27 +2718,53 @@ export default function Dashboard() {
 
                   {/* RIGHT: screen list */}
                   <div style={{ width: 220, flexShrink: 0 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "#5a5a5a", letterSpacing: 0.8, marginBottom: 8, padding: "0 4px" }}>
-                      SCREENS ({screens.length})
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, padding: "0 4px" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#5a5a5a", letterSpacing: 0.8 }}>SCREENS ({screens.length})</span>
+                      {screens.length > 0 && (
+                        <button onClick={toggleScreenSelectMode} title={screenSelectMode ? "Cancel selecting" : "Select multiple screens to delete"}
+                          style={{ background: "none", border: "none", color: screenSelectMode ? "#818cf8" : "#5a5a5a", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>
+                          {screenSelectMode ? "Cancel" : "Select"}
+                        </button>
+                      )}
                     </div>
+                    {screenSelectMode && (
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 4px", marginBottom: 8 }}>
+                        <button onClick={() => setSelectedScreenIds(selectedScreenIds.size === screens.length ? new Set() : new Set(screens.map(s => s.id)))}
+                          style={{ background: "none", border: "none", color: "#5a5a5a", cursor: "pointer", fontSize: 11 }}>
+                          {selectedScreenIds.size === screens.length ? "Deselect all" : "Select all"}
+                        </button>
+                        <button onClick={handleDeleteSelectedScreens} disabled={!selectedScreenIds.size || deletingScreens}
+                          style={{ background: "none", border: "none", color: selectedScreenIds.size ? "#ef4444" : "#5a5a5a", cursor: selectedScreenIds.size ? "pointer" : "default", fontSize: 11, fontWeight: 600 }}>
+                          {deletingScreens ? "Deleting..." : `Delete (${selectedScreenIds.size})`}
+                        </button>
+                      </div>
+                    )}
                     {screens.length === 0 ? (
                       <div style={{ fontSize: 12, color: "#5a5a5a", padding: "12px 8px", fontStyle: "italic" }}>No screens yet.</div>
                     ) : screens.map(s => (
-                      <div key={s.id} onClick={() => handleSelectScreen(s)} style={{
+                      <div key={s.id} onClick={() => screenSelectMode ? toggleScreenSelected(s.id) : handleSelectScreen(s)} style={{
                         padding: "10px 12px", borderRadius: 8, cursor: "pointer", marginBottom: 4, position: "relative",
-                        background: activeScreenId === s.id ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.03)",
-                        border: activeScreenId === s.id ? "1px solid rgba(99,102,241,0.4)" : "1px solid #2d2d2d",
+                        background: activeScreenId === s.id && !screenSelectMode ? "rgba(99,102,241,0.15)" : "rgba(255,255,255,0.03)",
+                        border: activeScreenId === s.id && !screenSelectMode ? "1px solid rgba(99,102,241,0.4)" : "1px solid #2d2d2d",
                       }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: activeScreenId === s.id ? "#818cf8" : "#cfcfcf", paddingRight: 20, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {screenSelectMode && (
+                            <input type="checkbox" checked={selectedScreenIds.has(s.id)} onChange={() => toggleScreenSelected(s.id)}
+                              onClick={e => e.stopPropagation()} style={{ flexShrink: 0, cursor: "pointer" }} />
+                          )}
+                          <div style={{ fontSize: 13, fontWeight: 600, color: activeScreenId === s.id ? "#818cf8" : "#cfcfcf", paddingRight: 20, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
+                        </div>
                         <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
                           {s.html && <span style={{ fontSize: 10, color: "#22c55e", background: "rgba(34,197,94,0.1)", padding: "1px 5px", borderRadius: 3 }}>HTML</span>}
                           {s.xml && <span style={{ fontSize: 10, color: "#818cf8", background: "rgba(99,102,241,0.1)", padding: "1px 5px", borderRadius: 3 }}>XML</span>}
                           {s.api && <span style={{ fontSize: 10, color: "#f59e0b", background: "rgba(245,158,11,0.1)", padding: "1px 5px", borderRadius: 3 }}>API</span>}
                           {!s.xml && !s.html && <span style={{ fontSize: 10, color: "#6a6a6a" }}>Draft</span>}
                         </div>
-                        <button onClick={e => { e.stopPropagation(); handleDeleteScreen(s.id); }}
-                          style={{ position: "absolute", top: 8, right: 8, background: "transparent", border: "none", color: "#5a5a5a", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}
-                          title="Delete screen">&times;</button>
+                        {!screenSelectMode && (
+                          <button onClick={e => { e.stopPropagation(); handleDeleteScreen(s.id); }}
+                            style={{ position: "absolute", top: 8, right: 8, background: "transparent", border: "none", color: "#5a5a5a", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}
+                            title="Delete screen">&times;</button>
+                        )}
                       </div>
                     ))}
                   </div>
