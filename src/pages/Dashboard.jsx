@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, memo, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import axios from "axios";
 import api from "../api/client";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
@@ -238,6 +239,8 @@ export default function Dashboard() {
   // the last-persisted html so "Reset" can revert without a refetch.
   const [showColorPicker, setShowColorPicker] = useState(false);
   const screenHtmlSavedRef = useRef("");
+  const studioGenerateAbortRef = useRef(null);
+  const neo4jAbortRef = useRef(null);
   const [screenXml, setScreenXml] = useState("");
   const [screenHtml, setScreenHtml] = useState("");
   const [screenApi, setScreenApi] = useState("");
@@ -557,10 +560,12 @@ export default function Dashboard() {
     // this exact screen at this exact moment. Every setter after an await below is gated on
     // isLiveScreen instead, since the user may have navigated away by the time it resolves.
     setStudioGenerating(true); setStudioError(""); setStudioStep("Saving screen definition...");
+    const controller = new AbortController();
+    studioGenerateAbortRef.current = controller;
     const payload = { name, description: desc, primary_entities: studioPrimaryEntities, joined_entities: studioJoinedEntities, reference_image: screenRefImage };
     try {
       if (!screenId) {
-        const res = await api.post(`/projects/${projectId}/screens`, payload);
+        const res = await api.post(`/projects/${projectId}/screens`, payload, { signal: controller.signal });
         const parsed = _syncScreens(res.data);
         screenId = parsed[parsed.length - 1].id;
         updateBgJob(jobId, { screenId });
@@ -571,7 +576,7 @@ export default function Dashboard() {
           setActiveScreenId(screenId);
         }
       } else {
-        _syncScreens((await api.put(`/projects/${projectId}/screens/${screenId}`, payload)).data);
+        _syncScreens((await api.put(`/projects/${projectId}/screens/${screenId}`, payload, { signal: controller.signal })).data);
       }
 
       // Selecting more than one primary entity signals "this is a navigation/landing screen",
@@ -584,7 +589,7 @@ export default function Dashboard() {
           : `Primary entity: ${studioPrimaryEntities[0]}.${studioJoinedEntities.length ? ` Joined entities: ${studioJoinedEntities.join(", ")}.` : ""} `
         : "";
       if (isLiveScreen(screenId)) setStudioStep("Generating screen structure (XML)...");
-      const xmlRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-xml`, { description: contextLine + desc });
+      const xmlRes = await api.post(`/projects/${projectId}/screens/${screenId}/generate-xml`, { description: contextLine + desc }, { signal: controller.signal });
       let parsed = _syncScreens(xmlRes.data);
       const xml = parsed.find(s => s.id === screenId)?.xml || "";
       if (isLiveScreen(screenId)) {
@@ -628,13 +633,22 @@ export default function Dashboard() {
       finishBgJob(jobId, "done");
       pushNotification(`"${name}" is ready.`, "success");
     } catch (err) {
-      const msg = err.response?.data?.detail || "Screen generation failed";
-      if (isLiveScreen(screenId)) setStudioError(msg);
-      finishBgJob(jobId, "error", { error: msg });
-      pushNotification(`"${name}" failed: ${msg}`, "error");
+      if (axios.isCancel(err)) {
+        finishBgJob(jobId, "error", { error: "Stopped" });
+      } else {
+        const msg = err.response?.data?.detail || "Screen generation failed";
+        if (isLiveScreen(screenId)) setStudioError(msg);
+        finishBgJob(jobId, "error", { error: msg });
+        pushNotification(`"${name}" failed: ${msg}`, "error");
+      }
     } finally {
+      studioGenerateAbortRef.current = null;
       if (isLiveScreen(screenId)) { setStudioGenerating(false); setStudioStep(""); }
     }
+  };
+
+  const handleStopStudioGenerate = () => {
+    studioGenerateAbortRef.current?.abort();
   };
 
   // Shared tail of screen generation: turns the (now-settled) XML into backend + frontend
@@ -1008,14 +1022,22 @@ export default function Dashboard() {
 
   const handleCreateNeo4jDb = async () => {
     setNeo4jCreating(true); setNeo4jError(""); setNeo4jResult(null);
+    const controller = new AbortController();
+    neo4jAbortRef.current = controller;
     try {
-      const res = await api.post(`/projects/${selectedProject.id}/neo4j/create-db`);
+      const res = await api.post(`/projects/${selectedProject.id}/neo4j/create-db`, undefined, { signal: controller.signal });
       setNeo4jResult(res.data);
     } catch (err) {
-      setNeo4jError(err.response?.data?.detail || "Neo4j schema creation failed");
+      if (axios.isCancel(err)) setNeo4jError("Stopped");
+      else setNeo4jError(err.response?.data?.detail || "Neo4j schema creation failed");
     } finally {
+      neo4jAbortRef.current = null;
       setNeo4jCreating(false);
     }
+  };
+
+  const handleStopNeo4jCreate = () => {
+    neo4jAbortRef.current?.abort();
   };
 
   const handleClearValidation = async () => {
@@ -1566,9 +1588,13 @@ export default function Dashboard() {
                       title={studioShowPreview ? "Hide the live preview" : "Show the live preview"}>
                       {studioShowPreview ? "Hide preview" : "Show preview"}
                     </button>
-                    <button className="studio-btn-primary" onClick={() => handleStudioGenerate()} disabled={studioGenerating}>
-                      {studioGenerating ? <><span className="spinner" /> Generating...</> : "Generate Screen"}
-                    </button>
+                    {studioGenerating ? (
+                      <button className="studio-btn-secondary" onClick={handleStopStudioGenerate} title="Cancel generation">
+                        <span className="spinner" /> Generating... (Stop)
+                      </button>
+                    ) : (
+                      <button className="studio-btn-primary" onClick={() => handleStudioGenerate()}>Generate Screen</button>
+                    )}
                   </div>
 
                   <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -2430,10 +2456,16 @@ export default function Dashboard() {
                         </span>
                         <button className="btn-primary" onClick={() => handleDownload("sql")} style={{ fontSize: 13, padding: "8px 16px" }}>Download SQL</button>
                         <button className="btn-purple" onClick={() => handleDownload("json")} style={{ fontSize: 13, padding: "8px 16px" }}>Download JSON</button>
-                        <button className="btn-purple" onClick={handleCreateNeo4jDb} disabled={neo4jCreating} style={{ fontSize: 13, padding: "8px 16px", opacity: neo4jCreating ? 0.6 : 1 }}
-                          title="Create this project's tables in Neo4j (constraints and indexes under its own label prefix)">
-                          {neo4jCreating ? <><span className="spinner" /> Creating...</> : "Create DB (Neo4j)"}
-                        </button>
+                        {neo4jCreating ? (
+                          <button className="btn-secondary" onClick={handleStopNeo4jCreate} style={{ fontSize: 13, padding: "8px 16px" }} title="Cancel">
+                            <span className="spinner" /> Creating... (Stop)
+                          </button>
+                        ) : (
+                          <button className="btn-purple" onClick={handleCreateNeo4jDb} style={{ fontSize: 13, padding: "8px 16px" }}
+                            title="Create this project's tables in Neo4j (constraints and indexes under its own label prefix)">
+                            Create DB (Neo4j)
+                          </button>
+                        )}
                       </div>
 
                       {(neo4jResult || neo4jError) && (
