@@ -8,20 +8,11 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { deriveTheme, applyThemeToHtml, readPrimaryColor, readSecondaryColor } from "../utils/theme";
 import XmlScreenRenderer from "../components/XmlScreenRenderer"; // eslint-disable-line no-unused-vars -- kept for rollback, see ServerScreenRenderer
 import ServerScreenRenderer from "../components/ServerScreenRenderer";
+import ThemePicker from "../components/ThemePicker";
 import AppShell from "../components/AppShell"; // eslint-disable-line no-unused-vars -- kept for rollback; the rendered page now carries its own equivalent shell
 
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
-// Mirrors backend-node/src/runtime/renderer.ts's THEMES table — the color every generated screen
-// in a project uses, picked once here and applied everywhere by the server-side renderer.
-const THEMES = [
-  { key: "indigo", label: "Indigo", color: "#4f46e5" },
-  { key: "emerald", label: "Emerald", color: "#059669" },
-  { key: "slate", label: "Slate", color: "#334155" },
-  { key: "rose", label: "Rose", color: "#e11d48" },
-  { key: "amber", label: "Amber", color: "#d97706" },
-  { key: "ocean", label: "Ocean", color: "#0284c7" },
-];
 
 // Fallbacks used until /auth/config/options loads
 const DEFAULT_DATE_FORMATS = ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "DD-MMM-YYYY", "DD.MM.YYYY"];
@@ -110,6 +101,7 @@ export default function Dashboard() {
   const [newLanguage, setNewLanguage] = useState("Python");
   const [newFrontendLang, setNewFrontendLang] = useState("React");
   const [newTheme, setNewTheme] = useState("indigo");
+  const [showThemePopover, setShowThemePopover] = useState(false);
 
   const [description, setDescription] = useState("");
   const [features, setFeatures] = useState("");
@@ -1460,16 +1452,8 @@ export default function Dashboard() {
               {FRONTEND_LANGUAGES.map(l => <option key={l}>{l}</option>)}
             </select>
             <label style={S.lbl}>Color Theme</label>
-            <div style={{ display: "flex", gap: 10, marginBottom: 4 }}>
-              {THEMES.map(t => (
-                <button key={t.key} type="button" onClick={() => setNewTheme(t.key)} title={t.label}
-                  style={{
-                    width: 32, height: 32, borderRadius: "50%", background: t.color, cursor: "pointer",
-                    border: newTheme === t.key ? "3px solid #fff" : "3px solid transparent",
-                    outline: newTheme === t.key ? `2px solid ${t.color}` : "2px solid transparent",
-                    outlineOffset: 1,
-                  }} />
-              ))}
+            <div style={{ marginBottom: 4 }}>
+              <ThemePicker value={newTheme} onChange={setNewTheme} />
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
               <button className="btn-primary" onClick={handleCreateProject} style={{ flex: 1, justifyContent: "center" }}>Create Project</button>
@@ -2661,15 +2645,20 @@ export default function Dashboard() {
                             {FRONTEND_LANGUAGES.map(l => <option key={l} style={{ background: "#2d2d30" }}>{l}</option>)}
                           </select>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 8, padding: "4px 8px" }} title="Color theme — applies to every screen in this project">
-                          {THEMES.map(t => (
-                            <button key={t.key} type="button" onClick={() => handleThemeChange(t.key)} title={t.label}
-                              style={{
-                                width: 16, height: 16, borderRadius: "50%", background: t.color, cursor: "pointer", padding: 0,
-                                border: (selectedProject?.ui_theme || "indigo") === t.key ? "2px solid #fff" : "2px solid transparent",
-                                outline: (selectedProject?.ui_theme || "indigo") === t.key ? `1px solid ${t.color}` : "none",
-                              }} />
-                          ))}
+                        <div style={{ position: "relative" }}>
+                          <button type="button" onClick={() => setShowThemePopover(s => !s)}
+                            title="Color theme — applies to every screen in this project"
+                            style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: "#818cf8", fontSize: 12, fontWeight: 600 }}>
+                            Theme
+                          </button>
+                          {showThemePopover && (
+                            <>
+                              <div onClick={() => setShowThemePopover(false)} style={{ position: "fixed", inset: 0, zIndex: 30 }} />
+                              <div className="card" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 31, padding: 10, width: 260, background: "#1e1e1e", border: "1px solid #333" }}>
+                                <ThemePicker value={selectedProject?.ui_theme || "indigo"} onChange={t => { handleThemeChange(t); setShowThemePopover(false); }} />
+                              </div>
+                            </>
+                          )}
                         </div>
                         <button className="btn-secondary" onClick={handleNewScreen} style={{ fontSize: 12, padding: "5px 12px" }}>+ New Screen</button>
                       </div>
