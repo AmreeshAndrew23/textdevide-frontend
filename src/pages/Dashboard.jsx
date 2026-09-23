@@ -8,7 +8,7 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { deriveTheme, applyThemeToHtml, readPrimaryColor, readSecondaryColor } from "../utils/theme";
 import XmlScreenRenderer from "../components/XmlScreenRenderer"; // eslint-disable-line no-unused-vars -- kept for rollback, see ServerScreenRenderer
 import ServerScreenRenderer from "../components/ServerScreenRenderer";
-import AppShell from "../components/AppShell";
+import AppShell from "../components/AppShell"; // eslint-disable-line no-unused-vars -- kept for rollback; the rendered page now carries its own equivalent shell
 
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
@@ -1900,11 +1900,9 @@ export default function Dashboard() {
                       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
                         {studioTab === "preview" && (
                           screenXml ? (
-                            <AppShell projectName={selectedProject?.name} screens={screens} activeScreenId={activeScreenId} onSelectScreen={handleSelectScreen}>
-                              <div key={activeScreenId} style={{ height: "100%" }}>
-                                <ServerScreenRenderer projectId={selectedProject?.id} screenId={activeScreenId} />
-                              </div>
-                            </AppShell>
+                            <div key={activeScreenId} style={{ height: "100%" }}>
+                              <ServerScreenRenderer projectId={selectedProject?.id} screenId={activeScreenId} />
+                            </div>
                           ) : (
                             <div style={{ textAlign: "center", color: "var(--st-muted)", fontSize: 13, padding: 60 }}>
                               {studioGenerating ? "Generating..." : 'Define a screen on the left and click "Generate Screen" to see a live preview here.'}
@@ -2685,9 +2683,7 @@ export default function Dashboard() {
                         {/* Live Preview tab — same server-rendered iframe as the Studio's own
                             preview, no separate AI-generated HTML string anymore. */}
                         {(screenTab === "preview" || screenTab === "html") && (
-                          <AppShell projectName={selectedProject?.name} screens={screens} activeScreenId={activeScreenId} onSelectScreen={handleSelectScreen}>
-                            <ServerScreenRenderer projectId={selectedProject?.id} screenId={activeScreenId} />
-                          </AppShell>
+                          <ServerScreenRenderer projectId={selectedProject?.id} screenId={activeScreenId} />
                         )}
 
                         {/* XML tab */}
