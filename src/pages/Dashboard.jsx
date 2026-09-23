@@ -12,6 +12,16 @@ import AppShell from "../components/AppShell"; // eslint-disable-line no-unused-
 
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
+// Mirrors backend-node/src/runtime/renderer.ts's THEMES table — the color every generated screen
+// in a project uses, picked once here and applied everywhere by the server-side renderer.
+const THEMES = [
+  { key: "indigo", label: "Indigo", color: "#4f46e5" },
+  { key: "emerald", label: "Emerald", color: "#059669" },
+  { key: "slate", label: "Slate", color: "#334155" },
+  { key: "rose", label: "Rose", color: "#e11d48" },
+  { key: "amber", label: "Amber", color: "#d97706" },
+  { key: "ocean", label: "Ocean", color: "#0284c7" },
+];
 
 // Fallbacks used until /auth/config/options loads
 const DEFAULT_DATE_FORMATS = ["YYYY-MM-DD", "DD/MM/YYYY", "MM/DD/YYYY", "DD-MMM-YYYY", "DD.MM.YYYY"];
@@ -99,6 +109,7 @@ export default function Dashboard() {
   const [newName, setNewName] = useState("");
   const [newLanguage, setNewLanguage] = useState("Python");
   const [newFrontendLang, setNewFrontendLang] = useState("React");
+  const [newTheme, setNewTheme] = useState("indigo");
 
   const [description, setDescription] = useState("");
   const [features, setFeatures] = useState("");
@@ -344,10 +355,10 @@ export default function Dashboard() {
   const handleCreateProject = async () => {
     if (!newName.trim()) return;
     try {
-      const res = await api.post("/projects", { name: newName, language: newLanguage, frontend_language: newFrontendLang });
+      const res = await api.post("/projects", { name: newName, language: newLanguage, frontend_language: newFrontendLang, theme: newTheme });
       setProjects([res.data, ...projects]);
       selectProject(res.data);
-      setShowNewModal(false); setNewName("");
+      setShowNewModal(false); setNewName(""); setNewTheme("indigo");
     } catch (e) { console.error(e); }
   };
 
@@ -1078,6 +1089,15 @@ export default function Dashboard() {
     } catch (e) { console.error(e); }
   };
 
+  // Changes the whole project's color theme — every screen picks this up the next time it's
+  // rendered (the server-rendered page reads it fresh on every request, so no regeneration needed).
+  const handleThemeChange = async (themeKey) => {
+    try {
+      const res = await api.put(`/projects/${selectedProject.id}`, { theme: themeKey });
+      setSelectedProject(res.data);
+    } catch (e) { console.error(e); }
+  };
+
   // Sync screens from API response
   // Every generation step's response funnels through here. Background jobs (see startBgJob)
   // keep calling this normally even after the user navigates elsewhere — persisting to the DB
@@ -1439,6 +1459,18 @@ export default function Dashboard() {
             <select value={newFrontendLang} onChange={e => setNewFrontendLang(e.target.value)} style={S.sel}>
               {FRONTEND_LANGUAGES.map(l => <option key={l}>{l}</option>)}
             </select>
+            <label style={S.lbl}>Color Theme</label>
+            <div style={{ display: "flex", gap: 10, marginBottom: 4 }}>
+              {THEMES.map(t => (
+                <button key={t.key} type="button" onClick={() => setNewTheme(t.key)} title={t.label}
+                  style={{
+                    width: 32, height: 32, borderRadius: "50%", background: t.color, cursor: "pointer",
+                    border: newTheme === t.key ? "3px solid #fff" : "3px solid transparent",
+                    outline: newTheme === t.key ? `2px solid ${t.color}` : "2px solid transparent",
+                    outlineOffset: 1,
+                  }} />
+              ))}
+            </div>
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
               <button className="btn-primary" onClick={handleCreateProject} style={{ flex: 1, justifyContent: "center" }}>Create Project</button>
               <button className="btn-secondary" onClick={() => setShowNewModal(false)}>Cancel</button>
@@ -2628,6 +2660,16 @@ export default function Dashboard() {
                             style={{ padding: "2px 6px", borderRadius: 4, border: "none", fontSize: 13, background: "transparent", color: "#e0e0e0", fontWeight: 600, cursor: "pointer" }}>
                             {FRONTEND_LANGUAGES.map(l => <option key={l} style={{ background: "#2d2d30" }}>{l}</option>)}
                           </select>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.25)", borderRadius: 8, padding: "4px 8px" }} title="Color theme — applies to every screen in this project">
+                          {THEMES.map(t => (
+                            <button key={t.key} type="button" onClick={() => handleThemeChange(t.key)} title={t.label}
+                              style={{
+                                width: 16, height: 16, borderRadius: "50%", background: t.color, cursor: "pointer", padding: 0,
+                                border: (selectedProject?.ui_theme || "indigo") === t.key ? "2px solid #fff" : "2px solid transparent",
+                                outline: (selectedProject?.ui_theme || "indigo") === t.key ? `1px solid ${t.color}` : "none",
+                              }} />
+                          ))}
                         </div>
                         <button className="btn-secondary" onClick={handleNewScreen} style={{ fontSize: 12, padding: "5px 12px" }}>+ New Screen</button>
                       </div>
