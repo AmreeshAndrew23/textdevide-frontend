@@ -1,13 +1,14 @@
 import { API_ORIGIN } from "../api/client";
 
-// Mirrors backend-node/src/runtime/renderer.ts's THEMES table.
+// Mirrors backend-node/src/runtime/renderer.ts's THEMES table — each key is a real layout+color
+// pairing (nav placement, form-field layout, density, etc.), not just a different accent color.
 const THEMES = [
-  { key: "indigo", label: "Indigo" },
-  { key: "emerald", label: "Emerald" },
-  { key: "slate", label: "Slate" },
-  { key: "rose", label: "Rose" },
-  { key: "amber", label: "Amber" },
-  { key: "ocean", label: "Ocean" },
+  { key: "indigo", label: "Modern" },
+  { key: "slate", label: "Enterprise" },
+  { key: "amber", label: "Warm" },
+  { key: "emerald", label: "Clinical" },
+  { key: "ocean", label: "Precision" },
+  { key: "rose", label: "Editorial" },
 ];
 
 // A real, live-rendered preview per theme (an <iframe> onto the backend's unauthenticated sample
