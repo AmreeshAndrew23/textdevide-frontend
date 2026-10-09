@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, memo, useRef, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import axios from "axios";
-import api from "../api/client";
+import api, { API_ORIGIN } from "../api/client";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { deriveTheme, applyThemeToHtml, readPrimaryColor, readSecondaryColor } from "../utils/theme";
@@ -25,6 +25,18 @@ const DEFAULT_LANGUAGE_OPTIONS = [{ code: "en", label: "English" }];
 const VARIANT_PREVIEW_VIRTUAL_W = 1440;
 const VARIANT_PREVIEW_VIRTUAL_H = 1000;
 const VARIANT_PREVIEW_SCALE = 300 / VARIANT_PREVIEW_VIRTUAL_W;
+
+// The "real app" entry point for a project: prefer its actual Login screen (so launching the app
+// starts the same way a real end user's session would — log in, then navigate from there using
+// the app's own real links, never by jumping straight to an arbitrary screen), else fall back to
+// the first screen that has real XML. Keeps this cleanly separate from the Studio's own screen
+// list/editor, which still needs direct per-screen access for building.
+function getAppEntryScreen(screens) {
+  const withXml = (screens || []).filter(s => s.xml);
+  if (!withXml.length) return null;
+  const login = withXml.find(s => /\blogin\b/i.test(s.name || ""));
+  return login || withXml[0];
+}
 
 export default function Dashboard() {
   const { user, logout, setUser } = useAuth();
@@ -1544,6 +1556,18 @@ export default function Dashboard() {
             {selectedProject ? selectedProject.name : "Workspace"}
           </h2>
           {selectedProject && <span style={S.badge}>{lang}</span>}
+          {selectedProject && (() => {
+            const entry = getAppEntryScreen(screens);
+            if (!entry) return null;
+            const token = localStorage.getItem("token") || "";
+            const href = `${API_ORIGIN}/runtime/projects/${selectedProject.id}/screens/${entry.id}?token=${encodeURIComponent(token)}`;
+            return (
+              <a href={href} target="_blank" rel="noreferrer" title={`Open as a real application, starting at "${entry.name}"`}
+                style={{ fontSize: 12, color: "#34d399", textDecoration: "none", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", border: "1px solid #2d6a4f", borderRadius: 6, background: "#1e1e1e", fontWeight: 600 }}>
+                ↗ Open App
+              </a>
+            );
+          })()}
           {selectedProject?.github_repo_url && (
             <a href={selectedProject.github_repo_url} target="_blank" rel="noreferrer" title={selectedProject.github_repo}
               style={{ fontSize: 12, color: "#818cf8", textDecoration: "none", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", border: "1px solid #3c3c3c", borderRadius: 6, background: "#1e1e1e" }}>
