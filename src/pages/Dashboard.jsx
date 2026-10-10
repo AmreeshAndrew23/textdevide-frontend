@@ -1559,8 +1559,10 @@ export default function Dashboard() {
           {selectedProject && (() => {
             const entry = getAppEntryScreen(screens);
             if (!entry) return null;
-            const token = localStorage.getItem("token") || "";
-            const href = `${API_ORIGIN}/runtime/projects/${selectedProject.id}/screens/${entry.id}?token=${encodeURIComponent(token)}`;
+            // No builder token here on purpose — the generated app now has its own real login
+            // (separate from the Studio), so opening it should always start from a clean slate and
+            // require logging in (or signing up), the same as anyone else who gets this link.
+            const href = `${API_ORIGIN}/runtime/projects/${selectedProject.id}/screens/${entry.id}`;
             return (
               <a href={href} target="_blank" rel="noreferrer" title={`Open as a real application, starting at "${entry.name}"`}
                 style={{ fontSize: 12, color: "#34d399", textDecoration: "none", display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", border: "1px solid #2d6a4f", borderRadius: 6, background: "#1e1e1e", fontWeight: 600 }}>
