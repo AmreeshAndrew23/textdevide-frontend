@@ -8,6 +8,7 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { deriveTheme, applyThemeToHtml, readPrimaryColor, readSecondaryColor } from "../utils/theme";
 import XmlScreenRenderer from "../components/XmlScreenRenderer"; // eslint-disable-line no-unused-vars -- kept for rollback, see ServerScreenRenderer
 import ServerScreenRenderer from "../components/ServerScreenRenderer";
+import VisualScreenEditor from "../components/visualEditor/VisualScreenEditor";
 import ThemePicker from "../components/ThemePicker";
 import AppShell from "../components/AppShell"; // eslint-disable-line no-unused-vars -- kept for rollback; the rendered page now carries its own equivalent shell
 
@@ -534,6 +535,17 @@ export default function Dashboard() {
     } catch (err) {
       setStudioError(err.response?.data?.detail || "Rename failed");
     }
+  };
+
+  // Saves a visual-editor layout change — same PUT every other screen-metadata edit already uses,
+  // just targeting the xml field instead of name/description. Throws on failure so
+  // VisualScreenEditor's own Save button can show the error inline rather than it being swallowed.
+  const handleSaveVisualLayout = async (newXml) => {
+    if (!activeScreenId) return;
+    const data = (await api.put(`/projects/${selectedProject.id}/screens/${activeScreenId}`, { xml: newXml })).data;
+    _syncScreens(data);
+    const saved = (data.ui_screens ? JSON.parse(data.ui_screens) : []).find(s => s.id === activeScreenId);
+    if (saved) setScreenXml(saved.xml || "");
   };
 
   // A wireframe/screenshot the user attaches so "Generate Screen" can visually match it
@@ -2725,6 +2737,7 @@ export default function Dashboard() {
                         <div style={{ display: "flex", borderBottom: "1px solid #333", background: "#1e1e1e" }}>
                           {[
                             { key: "preview", label: "Live Preview", ready: !!screenXml },
+                            { key: "design", label: "Design", ready: !!screenXml },
                             { key: "xml", label: "XML Definition", ready: !!screenXml },
                           ].map(t => (
                             <button key={t.key} onClick={() => setScreenTab(t.key)} style={{
@@ -2741,6 +2754,14 @@ export default function Dashboard() {
                             preview, no separate AI-generated HTML string anymore. */}
                         {(screenTab === "preview" || screenTab === "html") && (
                           <ServerScreenRenderer projectId={selectedProject?.id} screenId={activeScreenId} />
+                        )}
+
+                        {/* Design tab — drag-and-drop structure/property editor, complementing the
+                            prompt-based generation above; both converge on the same screen XML. */}
+                        {screenTab === "design" && (
+                          <div style={{ height: 600 }}>
+                            <VisualScreenEditor xml={screenXml} screenKey={activeScreenId} onSave={handleSaveVisualLayout} />
+                          </div>
                         )}
 
                         {/* XML tab */}
