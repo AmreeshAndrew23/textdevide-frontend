@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/client";
+import { useAuth } from "../context/AuthContext";
 import { ERDiagram } from "../components/ERDiagram";
 
 // Lives outside any specific project, in its own route (unlike every other schema/UI concept in
@@ -10,6 +11,7 @@ import { ERDiagram } from "../components/ERDiagram";
 // seed a new project's entities from one of them (see Dashboard.jsx's chosen_domain_id).
 export default function Domains() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [catalog, setCatalog] = useState(null);
   const [chosen, setChosen] = useState(null);
   const [error, setError] = useState("");
@@ -19,15 +21,48 @@ export default function Domains() {
   const [choosing, setChoosing] = useState(false);
   const [notice, setNotice] = useState("");
 
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCategory, setNewCategory] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  function loadCatalog() {
+    return api.get("/domains").then((res) => setCatalog(res.data));
+  }
   function loadChosen() {
     return api.get("/domains/chosen").then((res) => setChosen(res.data));
   }
 
   useEffect(() => {
-    Promise.all([api.get("/domains"), loadChosen()])
-      .then(([catalogRes]) => setCatalog(catalogRes.data))
+    Promise.all([loadCatalog(), loadChosen()])
       .catch(() => setError("Failed to load domains."));
   }, []);
+
+  function handleCreateDomain() {
+    if (!newName.trim() || !newDescription.trim()) return;
+    setCreating(true);
+    setCreateError("");
+    api.post("/domains", { name: newName, description: newDescription, category: newCategory || undefined })
+      .then((res) => {
+        setShowNewModal(false);
+        setNewName(""); setNewCategory(""); setNewDescription("");
+        return loadCatalog().then(() => selectDomain(res.data.id));
+      })
+      .catch((e) => setCreateError(e.response?.data?.message || e.response?.data?.detail || "Failed to create this domain."))
+      .finally(() => setCreating(false));
+  }
+
+  function deleteSelected() {
+    if (!selectedId || !window.confirm("Delete this domain? This can't be undone.")) return;
+    setDeleting(true);
+    api.delete(`/domains/${selectedId}`)
+      .then(() => { setSelectedId(null); setDetail(null); return loadCatalog(); })
+      .catch((e) => setError(e.response?.data?.message || e.response?.data?.detail || "Failed to delete this domain."))
+      .finally(() => setDeleting(false));
+  }
 
   function selectDomain(id) {
     setSelectedId(id);
@@ -59,8 +94,43 @@ export default function Domains() {
     <div className="studio-root" style={{ minHeight: "100vh", background: "var(--st-bg)", padding: "28px 36px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
         <button className="studio-btn-secondary" onClick={() => navigate("/")}>← Back</button>
-        <div style={{ fontWeight: 800, fontSize: 20 }}>Domains</div>
+        <div style={{ fontWeight: 800, fontSize: 20, flex: 1 }}>Domains</div>
+        {user?.is_superuser && (
+          <button className="studio-btn-primary" onClick={() => setShowNewModal(true)}>+ New Domain</button>
+        )}
       </div>
+
+      {showNewModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }} onClick={() => setShowNewModal(false)}>
+          <div className="studio-card" style={{ width: 520, padding: 24 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>New Domain</div>
+            <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 16 }}>
+              Describe the domain in plain English — entities are extracted automatically by the
+              same AI that builds a project's own schema, no need to write tables by hand.
+            </p>
+            <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Name</label>
+            <input className="studio-input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Insurance Claims" style={{ width: "100%", marginBottom: 12 }} autoFocus />
+            <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Category (optional)</label>
+            <input className="studio-input" value={newCategory} onChange={(e) => setNewCategory(e.target.value)} placeholder="Insurance" style={{ width: "100%", marginBottom: 12 }} />
+            <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Description</label>
+            <textarea
+              className="studio-textarea"
+              value={newDescription}
+              onChange={(e) => setNewDescription(e.target.value)}
+              placeholder="An insurance claims app with policies, claims, and adjusters. Each policy belongs to a customer and can have many claims; each claim is assigned to one adjuster and has a status and amount."
+              rows={5}
+              style={{ width: "100%", marginBottom: 12, resize: "vertical" }}
+            />
+            {createError && <div style={{ color: "var(--st-danger)", fontSize: 12.5, marginBottom: 12 }}>{createError}</div>}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="studio-btn-primary" onClick={handleCreateDomain} disabled={creating || !newName.trim() || !newDescription.trim()} style={{ flex: 1 }}>
+                {creating ? "Extracting entities…" : "Create Domain"}
+              </button>
+              <button className="studio-btn-secondary" onClick={() => setShowNewModal(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       <p style={{ color: "var(--st-muted)", fontSize: 13.5, marginTop: -10, marginBottom: 24, maxWidth: 640 }}>
         Browse ready-made entity sets for common domains. Choose one to add it to your library — when
         you start a new project, you can seed it straight from anything you've already chosen here.
@@ -122,9 +192,16 @@ export default function Domains() {
                   <div style={{ fontWeight: 700, fontSize: 15 }}>{detail?.name || "…"}</div>
                   {detail?.description && <div style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 2 }}>{detail.description}</div>}
                 </div>
-                <button className="studio-btn-primary" onClick={chooseSelected} disabled={choosing || isChosen}>
-                  {isChosen ? "Already chosen" : choosing ? "Choosing…" : "Choose this domain"}
-                </button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {user?.is_superuser && (
+                    <button className="studio-btn-secondary" onClick={deleteSelected} disabled={deleting} style={{ color: "var(--st-danger)" }}>
+                      {deleting ? "Deleting…" : "Delete"}
+                    </button>
+                  )}
+                  <button className="studio-btn-primary" onClick={chooseSelected} disabled={choosing || isChosen}>
+                    {isChosen ? "Already chosen" : choosing ? "Choosing…" : "Choose this domain"}
+                  </button>
+                </div>
               </div>
               {notice && <div style={{ padding: "10px 18px", fontSize: 12.5, color: "var(--st-muted)" }}>{notice}</div>}
               {detailLoading && <div style={{ padding: 60, textAlign: "center", color: "var(--st-muted)" }}>Loading…</div>}
