@@ -11,6 +11,7 @@ import ServerScreenRenderer from "../components/ServerScreenRenderer";
 import VisualScreenEditor from "../components/visualEditor/VisualScreenEditor";
 import ThemePicker from "../components/ThemePicker";
 import AppShell from "../components/AppShell"; // eslint-disable-line no-unused-vars -- kept for rollback; the rendered page now carries its own equivalent shell
+import { ERDiagram } from "../components/ERDiagram";
 
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
@@ -114,6 +115,13 @@ export default function Dashboard() {
   const [newLanguage, setNewLanguage] = useState("Python");
   const [newFrontendLang, setNewFrontendLang] = useState("React");
   const [newTheme, setNewTheme] = useState("indigo");
+  const [newChosenDomainId, setNewChosenDomainId] = useState("");
+  const [chosenDomains, setChosenDomains] = useState(null);
+
+  useEffect(() => {
+    if (!showNewModal || chosenDomains !== null) return; // fetched once, lazily, the first time the modal opens
+    api.get("/domains/chosen").then((res) => setChosenDomains(res.data)).catch(() => setChosenDomains([]));
+  }, [showNewModal, chosenDomains]);
   const [showThemePopover, setShowThemePopover] = useState(false);
 
   const [description, setDescription] = useState("");
@@ -360,10 +368,13 @@ export default function Dashboard() {
   const handleCreateProject = async () => {
     if (!newName.trim()) return;
     try {
-      const res = await api.post("/projects", { name: newName, language: newLanguage, frontend_language: newFrontendLang, theme: newTheme });
+      const res = await api.post("/projects", {
+        name: newName, language: newLanguage, frontend_language: newFrontendLang, theme: newTheme,
+        chosen_domain_id: newChosenDomainId ? Number(newChosenDomainId) : undefined,
+      });
       setProjects([res.data, ...projects]);
       selectProject(res.data);
-      setShowNewModal(false); setNewName(""); setNewTheme("indigo");
+      setShowNewModal(false); setNewName(""); setNewTheme("indigo"); setNewChosenDomainId("");
     } catch (e) { console.error(e); }
   };
 
@@ -1479,6 +1490,15 @@ export default function Dashboard() {
             <div style={{ marginBottom: 4 }}>
               <ThemePicker value={newTheme} onChange={setNewTheme} />
             </div>
+            {chosenDomains?.length > 0 && (
+              <>
+                <label style={S.lbl}>Start from a domain (optional)</label>
+                <select value={newChosenDomainId} onChange={e => setNewChosenDomainId(e.target.value)} style={S.sel}>
+                  <option value="">Blank project</option>
+                  {chosenDomains.map(c => <option key={c.id} value={c.id}>{c.domain_name}</option>)}
+                </select>
+              </>
+            )}
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
               <button className="btn-primary" onClick={handleCreateProject} style={{ flex: 1, justifyContent: "center" }}>Create Project</button>
               <button className="btn-secondary" onClick={() => setShowNewModal(false)}>Cancel</button>
@@ -1492,8 +1512,13 @@ export default function Dashboard() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
           <h1 style={S.logo}>Text Dev IDE</h1>
         </div>
-        <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ width: "100%", justifyContent: "center", marginBottom: 24 }}>
+        <button className="btn-primary" onClick={() => setShowNewModal(true)} style={{ width: "100%", justifyContent: "center", marginBottom: 10 }}>
           + New Project
+        </button>
+        {/* Outside the project list on purpose — a shared catalog you browse BEFORE starting a
+            project, not a per-project section like Workbench/Schema/UI below. */}
+        <button className="btn-secondary" onClick={() => navigate("/domains")} style={{ width: "100%", justifyContent: "center", marginBottom: 24 }}>
+          🗂️ Domains
         </button>
 
         <div style={{ flex: 1, overflowY: "auto" }}>
@@ -2854,7 +2879,7 @@ export default function Dashboard() {
                     <p style={{ margin: 0, fontSize: 13, color: "#7a7a7a" }}>Entity-relationship diagram generated from your database schema.</p>
                   </div>
                   <div className="card" style={{ minHeight: 200 }}>
-                    <ERDiagram entities={entities} />
+                    <ERDiagram entities={entities} emptyMessage={<>No schema extracted yet. Go to <strong>Database Schema</strong> in Workspace to extract entities.</>} />
                   </div>
                 </div>
               )}
@@ -3209,77 +3234,6 @@ function answerProjectQuestion(question, entities, screens, project) {
   if (/status/.test(q)) return `This project's status is "${project?.status || "draft"}".`;
 
   return null;
-}
-
-function entitiesToMermaid(entities) {
-  if (!entities?.tables?.length) return "";
-  const lines = ["erDiagram"];
-  for (const table of entities.tables) {
-    lines.push(`  ${table.name} {`);
-    for (const col of (table.columns || [])) {
-      const type = (col.type || "string").replace(/\s+/g, "_");
-      const name = col.name;
-      const tags = [col.pk ? "PK" : null, col.fk ? "FK" : null].filter(Boolean).join(",");
-      lines.push(`    ${type} ${name}${tags ? ` "${tags}"` : ""}`);
-    }
-    lines.push("  }");
-  }
-  const seen = new Set();
-  for (const table of entities.tables) {
-    for (const col of (table.columns || [])) {
-      if (col.fk) {
-        const refTable = col.fk.split(".")[0];
-        const key = `${refTable}||--o{${table.name}`;
-        if (!seen.has(key) && refTable !== table.name) {
-          seen.add(key);
-          lines.push(`  ${refTable} ||--o{ ${table.name} : " "`);
-        }
-      }
-    }
-  }
-  return lines.join("\n");
-}
-
-function ERDiagram({ entities }) {
-  const containerRef = useRef(null);
-  const [svg, setSvg] = useState("");
-  const [error, setError] = useState(null);
-
-  const mermaidDef = useMemo(() => entitiesToMermaid(entities), [entities]);
-
-  useEffect(() => {
-    if (!mermaidDef) { setSvg(""); return; }
-    let cancelled = false;
-    import("mermaid").then(({ default: mermaid }) => {
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        er: { diagramPadding: 40, layoutDirection: "TB", minEntityWidth: 140, minEntityHeight: 80, entityPadding: 18, useMaxWidth: true },
-      });
-      const id = `er-${Date.now()}`;
-      mermaid.render(id, mermaidDef).then(({ svg: rendered }) => {
-        if (!cancelled) { setSvg(rendered); setError(null); }
-      }).catch((e) => {
-        if (!cancelled) setError(e.message);
-      });
-    });
-    return () => { cancelled = true; };
-  }, [mermaidDef]);
-
-  if (!mermaidDef) {
-    return <div style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>No schema extracted yet. Go to <strong>Database Schema</strong> in Workspace to extract entities.</div>;
-  }
-  if (error) {
-    return <div style={{ padding: 24, color: "#f87171", fontSize: 13 }}>Diagram error: {error}</div>;
-  }
-  if (!svg) {
-    return <div style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>Rendering diagram…</div>;
-  }
-
-  return (
-    <div ref={containerRef} style={{ padding: 24, overflow: "auto", background: "#13111c", borderRadius: 8, minHeight: 300 }}
-      dangerouslySetInnerHTML={{ __html: svg }} />
-  );
 }
 
 function SchemaRef({ tables }) {

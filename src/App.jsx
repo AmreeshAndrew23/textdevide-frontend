@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import ScreenGenerator from "./pages/ScreenGenerator";
 import AdminUsage from "./pages/AdminUsage";
+import Domains from "./pages/Domains";
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || "";
 
@@ -55,6 +56,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <AdminUsage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/domains"
+              element={
+                <ProtectedRoute>
+                  <Domains />
                 </ProtectedRoute>
               }
             />
