@@ -1517,8 +1517,12 @@ export default function Dashboard() {
         </button>
         {/* Outside the project list on purpose — a shared catalog you browse BEFORE starting a
             project, not a per-project section like Workbench/Schema/UI below. */}
-        <button className="btn-secondary" onClick={() => navigate("/domains")} style={{ width: "100%", justifyContent: "center", marginBottom: 24 }}>
+        <button className="btn-secondary" onClick={() => navigate("/domains")} style={{ width: "100%", justifyContent: "center", marginBottom: 10 }}>
           🗂️ Domains
+        </button>
+        {/* Its own separate space, not nested under any project — see pages/RuntimeEngine.jsx. */}
+        <button className="btn-secondary" onClick={() => navigate("/runtime-engine")} style={{ width: "100%", justifyContent: "center", marginBottom: 24 }}>
+          ⚙️ Runtime Engine
         </button>
 
         <div style={{ flex: 1, overflowY: "auto" }}>
