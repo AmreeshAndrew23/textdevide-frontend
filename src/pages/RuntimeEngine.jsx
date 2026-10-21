@@ -11,13 +11,14 @@ import api from "../api/client";
 const ELEMENT_TAGS = ["Entity", "Relationship", "Validation", "DataSource", "Screen", "Action", "Theme", "Session", "Auditing", "AutoNumber"];
 
 // Minimal client-side extraction (native DOMParser, no library) of just enough from a Screen's
-// raw XML to render a bare, unstyled Run panel — UIField label/bind and Button label/action. This
-// mirrors backend-node's applicationModel.ts's parseScreenElement in spirit, not by sharing code
-// (that parser is server-only); good enough for the MVP "fastest, bare form" tier the plan called
-// for, not a full themed renderer.
+// raw XML to render a bare, unstyled Run panel — UIField label/bind, Button label/action, and (for
+// a browse screen) the Grid's own columns/entity/rowClick target. This mirrors backend-node's
+// applicationModel.ts's parseScreenElement in spirit, not by sharing code (that parser is
+// server-only); good enough for the MVP "fastest, bare form/table" tier, not a full themed renderer.
 function parseScreenForRun(xml) {
   const doc = new DOMParser().parseFromString(xml, "text/xml");
   const root = doc.documentElement;
+  const entity = root.getAttribute("entity");
   const fields = Array.from(root.querySelectorAll("Fields > UIField")).map((el) => {
     const bind = el.getAttribute("bind") || (el.getAttribute("valueFrom") || "").replace(/^field:/, "");
     return { label: el.getAttribute("label") || bind, bind };
@@ -25,7 +26,18 @@ function parseScreenForRun(xml) {
   const buttons = Array.from(root.querySelectorAll("Buttons > Button")).map((el) => ({
     label: el.getAttribute("label"), action: el.getAttribute("action"),
   }));
-  return { fields, buttons };
+  const gridEl = root.querySelector("Grid");
+  const grid = gridEl
+    ? {
+        entity: gridEl.getAttribute("entity"),
+        columns: Array.from(gridEl.querySelectorAll("Column")).map((c) => ({ header: c.getAttribute("header"), bind: c.getAttribute("bind") })),
+        rowClick: (() => {
+          const on = gridEl.querySelector('On[event="rowClick"]');
+          return on ? { action: on.getAttribute("action"), targetScreen: on.getAttribute("targetScreen") } : null;
+        })(),
+      }
+    : null;
+  return { entity, fields, buttons, grid };
 }
 
 // Reconstructs the whole <Application> document from its stored pieces — the backend keeps one
@@ -64,6 +76,8 @@ export default function RuntimeEngine() {
   const [runFieldValues, setRunFieldValues] = useState({});
   const [runMessages, setRunMessages] = useState([]);
   const [running, setRunning] = useState(false);
+  const [gridRows, setGridRows] = useState(null);
+  const [gridLoading, setGridLoading] = useState(false);
 
   function loadApplications() {
     return api.get("/runtime-applications").then((res) => setApplications(res.data)).catch(() => setError("Failed to load applications."));
@@ -118,26 +132,76 @@ export default function RuntimeEngine() {
       .catch(() => setError("Failed to delete this application."));
   }
 
-  function openElement(el) {
-    setActiveElement(el);
-    setRunFieldValues({});
-    setRunMessages([]);
+  function loadGridRows(entityName) {
+    setGridLoading(true);
+    api.get(`/runtime-applications/${selectedId}/entities/${entityName}/rows`)
+      .then((res) => setGridRows(res.data.rows))
+      .catch(() => { setGridRows([]); setError("Failed to load this entity's rows."); })
+      .finally(() => setGridLoading(false));
   }
 
-  function runAction(action) {
-    if (!activeElement || activeElement.tag !== "Screen") return;
+  // Opens a Screen element — a Grid screen immediately fetches its entity's real rows (a browse
+  // view); a form screen starts blank unless prefill is given (editing an existing row, via a
+  // Grid's rowClick).
+  function openElement(el, prefill) {
+    setActiveElement(el);
+    setRunFieldValues(prefill || {});
+    setRunMessages([]);
+    setGridRows(null);
+    const parsed = el.tag === "Screen" ? parseScreenForRun(el.xml) : null;
+    if (parsed?.grid?.entity) loadGridRows(parsed.grid.entity);
+  }
+
+  // A Grid row's rowClick -> targetScreen is pure navigation (see applicationEngine.ts's
+  // comment: it carries no database involvement itself) — resolved entirely client-side by
+  // finding that Screen among the already-fetched detail.elements, then opening it pre-filled
+  // with the clicked row's own data for editing.
+  function openRowForEdit(targetScreenName, row) {
+    const targetEl = detail?.elements.find((e) => e.tag === "Screen" && e.name === targetScreenName);
+    if (!targetEl) { setError(`Screen "${targetScreenName}" not found.`); return; }
+    openElement(targetEl, row);
+  }
+
+  function runAction(action, overrideFieldValues) {
+    if (!activeElement || activeElement.tag !== "Screen") return Promise.resolve();
+    let fieldValues = overrideFieldValues || runFieldValues;
+    // The generated Screen's own Fields never include the key field (it's meant to be
+    // system-generated, not typed in — the AI never renders a UIField for it), so there's
+    // otherwise no way to set one when creating a brand new record through this bare form.
+    // Only applies to a genuine create (editing an existing row already has its real key).
+    if (action === "save" && !fieldValues[screenKeyField]) {
+      fieldValues = { ...fieldValues, [screenKeyField]: crypto.randomUUID() };
+      setRunFieldValues(fieldValues);
+    }
     setRunning(true);
     setRunMessages([]);
-    api.post(`/runtime-applications/${selectedId}/screens/${activeElement.name}/run`, {
-      elementId: action, action, fieldValues: runFieldValues,
+    return api.post(`/runtime-applications/${selectedId}/screens/${activeElement.name}/run`, {
+      elementId: action, action, fieldValues,
     })
-      .then((res) => setRunMessages(res.data.actions || []))
-      .catch((e) => setRunMessages([{ type: "message", messageType: "error", value: e.response?.data?.message || e.response?.data?.detail || "Run failed." }]))
+      .then((res) => { setRunMessages(res.data.actions || []); return res.data.actions || []; })
+      .catch((e) => {
+        const value = e.response?.data?.message || e.response?.data?.detail || "Run failed.";
+        setRunMessages([{ type: "message", messageType: "error", value }]);
+        return [];
+      })
       .finally(() => setRunning(false));
+  }
+
+  // Deletes straight from the grid row, using the CURRENT (Grid) screen's own entity binding —
+  // the "delete" built-in only needs screen.entity, so there's no need to navigate to the form
+  // screen first just to remove a record.
+  function deleteGridRow(row, keyField) {
+    if (!window.confirm("Delete this record? This can't be undone.")) return;
+    runAction("delete", { [keyField]: row[keyField] }).then(() => {
+      const parsed = parseScreenForRun(activeElement.xml);
+      if (parsed?.grid?.entity) loadGridRows(parsed.grid.entity);
+    });
   }
 
   const elementsByTag = detail ? detail.elements.filter((e) => e.tag === activeTag) : [];
   const screenForRun = activeElement?.tag === "Screen" ? parseScreenForRun(activeElement.xml) : null;
+  const screenEntityDef = screenForRun?.entity ? detail?.elements.find((e) => e.tag === "Entity" && e.name === screenForRun.entity) : null;
+  const screenKeyField = screenEntityDef ? (screenEntityDef.xml.match(/<Field name="(\w+)"[^>]*key="true"/) || [])[1] || "id" : "id";
 
   return (
     <div className="studio-root" style={{ minHeight: "100vh", background: "var(--st-bg)", padding: "28px 36px" }}>
@@ -292,10 +356,59 @@ export default function RuntimeEngine() {
                     <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12 }}>{activeElement.xml}</pre>
                   </div>
                 )}
-                {activeElement && activeElement.tag === "Screen" && screenForRun && (
+                {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && (
                   <div>
                     <button className="studio-btn-secondary" onClick={() => setActiveElement(null)} style={{ marginBottom: 12 }}>← Back</button>
-                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Run: {activeElement.name}</div>
+                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Browse: {activeElement.name}</div>
+                    {gridLoading && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Loading…</div>}
+                    {!gridLoading && gridRows?.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No records yet.</div>}
+                    {!gridLoading && gridRows?.length > 0 && (
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                        <thead>
+                          <tr>
+                            {screenForRun.grid.columns.map((c) => (
+                              <th key={c.bind} style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--st-border)", color: "var(--st-muted)" }}>{c.header}</th>
+                            ))}
+                            <th style={{ borderBottom: "1px solid var(--st-border)" }} />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {gridRows.map((row, i) => (
+                            <tr key={i}>
+                              {screenForRun.grid.columns.map((c) => (
+                                <td
+                                  key={c.bind}
+                                  onClick={() => screenForRun.grid.rowClick?.targetScreen && openRowForEdit(screenForRun.grid.rowClick.targetScreen, row)}
+                                  style={{ padding: "8px 10px", borderBottom: "1px solid var(--st-border)", cursor: screenForRun.grid.rowClick ? "pointer" : "default" }}
+                                >
+                                  {String(row[c.bind] ?? "")}
+                                </td>
+                              ))}
+                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--st-border)" }}>
+                                <button className="studio-btn-secondary" style={{ color: "var(--st-danger)", fontSize: 12, padding: "3px 8px" }} onClick={() => deleteGridRow(row, screenKeyField)}>
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {runMessages.length > 0 && (
+                      <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
+                        {runMessages.map((m, i) => (
+                          <div key={i} style={{ fontSize: 13, color: m.messageType === "error" ? "var(--st-danger)" : "var(--st-text)" }}>{m.value}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {activeElement && activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && (
+                  <div>
+                    <button className="studio-btn-secondary" onClick={() => setActiveElement(null)} style={{ marginBottom: 12 }}>← Back</button>
+                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>
+                      {runFieldValues[screenKeyField] ? "Edit" : "Run"}: {activeElement.name}
+                    </div>
                     {screenForRun.fields.map((f) => (
                       <div key={f.bind} style={{ marginBottom: 10 }}>
                         <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>{f.label}</label>
