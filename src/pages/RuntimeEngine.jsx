@@ -40,6 +40,32 @@ function parseScreenForRun(xml) {
   return { entity, fields, buttons, grid };
 }
 
+const DEFAULT_THEME = { logo: null, primary: "#4f46e5", accent: "#f59e0b", background: "#ffffff", fontFamily: "system-ui, sans-serif", fontSize: "14", cornerRadius: "6", density: "comfortable" };
+
+// Extracts the generated <Theme> element's Colors/Font/Style/Logo into something directly usable
+// as inline CSS — the only part of the vocabulary that's purely cosmetic (per the plan's Phase 2
+// scope note), so applying it needed no backend/engine changes at all, just reading what's already
+// stored and stopping ignoring it in the Run panel.
+function parseThemeForRun(xml) {
+  if (!xml) return DEFAULT_THEME;
+  const doc = new DOMParser().parseFromString(xml, "text/xml");
+  const root = doc.documentElement;
+  const logo = root.querySelector("Logo");
+  const colors = root.querySelector("Colors");
+  const font = root.querySelector("Font");
+  const style = root.querySelector("Style");
+  return {
+    logo: logo?.getAttribute("src") || null,
+    primary: colors?.getAttribute("primary") || DEFAULT_THEME.primary,
+    accent: colors?.getAttribute("accent") || DEFAULT_THEME.accent,
+    background: colors?.getAttribute("background") || DEFAULT_THEME.background,
+    fontFamily: font?.getAttribute("family") ? `${font.getAttribute("family")}, sans-serif` : DEFAULT_THEME.fontFamily,
+    fontSize: font?.getAttribute("size") || DEFAULT_THEME.fontSize,
+    cornerRadius: style?.getAttribute("cornerRadius") || DEFAULT_THEME.cornerRadius,
+    density: style?.getAttribute("density") || DEFAULT_THEME.density,
+  };
+}
+
 // Reconstructs the whole <Application> document from its stored pieces — the backend keeps one
 // element per Neo4j node (see runtimeEngine/applicationStore.ts), never the original whole-document
 // string, so "view it in one stretch" means rebuilding it client-side from detail.elements, in the
@@ -202,6 +228,8 @@ export default function RuntimeEngine() {
   const screenForRun = activeElement?.tag === "Screen" ? parseScreenForRun(activeElement.xml) : null;
   const screenEntityDef = screenForRun?.entity ? detail?.elements.find((e) => e.tag === "Entity" && e.name === screenForRun.entity) : null;
   const screenKeyField = screenEntityDef ? (screenEntityDef.xml.match(/<Field name="(\w+)"[^>]*key="true"/) || [])[1] || "id" : "id";
+  const themeEl = detail?.elements.find((e) => e.tag === "Theme");
+  const theme = parseThemeForRun(themeEl?.xml);
 
   return (
     <div className="studio-root" style={{ minHeight: "100vh", background: "var(--st-bg)", padding: "28px 36px" }}>
@@ -356,73 +384,95 @@ export default function RuntimeEngine() {
                     <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12 }}>{activeElement.xml}</pre>
                   </div>
                 )}
-                {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && (
-                  <div>
-                    <button className="studio-btn-secondary" onClick={() => setActiveElement(null)} style={{ marginBottom: 12 }}>← Back</button>
-                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Browse: {activeElement.name}</div>
-                    {gridLoading && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Loading…</div>}
-                    {!gridLoading && gridRows?.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No records yet.</div>}
-                    {!gridLoading && gridRows?.length > 0 && (
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                        <thead>
-                          <tr>
-                            {screenForRun.grid.columns.map((c) => (
-                              <th key={c.bind} style={{ textAlign: "left", padding: "8px 10px", borderBottom: "1px solid var(--st-border)", color: "var(--st-muted)" }}>{c.header}</th>
-                            ))}
-                            <th style={{ borderBottom: "1px solid var(--st-border)" }} />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {gridRows.map((row, i) => (
-                            <tr key={i}>
+                {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && (() => {
+                  const pad = theme.density === "compact" ? "5px 10px" : "10px 14px";
+                  return (
+                    <div style={{ background: theme.background, borderRadius: `${theme.cornerRadius}px`, padding: 18, fontFamily: theme.fontFamily, fontSize: `${theme.fontSize}px` }}>
+                      <button className="studio-btn-secondary" onClick={() => setActiveElement(null)} style={{ marginBottom: 12 }}>← Back</button>
+                      {theme.logo && <img src={theme.logo} alt="" style={{ height: 28, marginBottom: 10, display: "block" }} onError={(e) => { e.target.style.display = "none"; }} />}
+                      <div style={{ fontWeight: 700, fontSize: "1.1em", marginBottom: 12, color: theme.primary }}>Browse: {activeElement.name}</div>
+                      {gridLoading && <div style={{ color: "#888" }}>Loading…</div>}
+                      {!gridLoading && gridRows?.length === 0 && <div style={{ color: "#888" }}>No records yet.</div>}
+                      {!gridLoading && gridRows?.length > 0 && (
+                        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                          <thead>
+                            <tr style={{ background: theme.primary }}>
                               {screenForRun.grid.columns.map((c) => (
-                                <td
-                                  key={c.bind}
-                                  onClick={() => screenForRun.grid.rowClick?.targetScreen && openRowForEdit(screenForRun.grid.rowClick.targetScreen, row)}
-                                  style={{ padding: "8px 10px", borderBottom: "1px solid var(--st-border)", cursor: screenForRun.grid.rowClick ? "pointer" : "default" }}
-                                >
-                                  {String(row[c.bind] ?? "")}
-                                </td>
+                                <th key={c.bind} style={{ textAlign: "left", padding: pad, color: "#fff", fontWeight: 600 }}>{c.header}</th>
                               ))}
-                              <td style={{ padding: "8px 10px", borderBottom: "1px solid var(--st-border)" }}>
-                                <button className="studio-btn-secondary" style={{ color: "var(--st-danger)", fontSize: 12, padding: "3px 8px" }} onClick={() => deleteGridRow(row, screenKeyField)}>
-                                  Delete
-                                </button>
-                              </td>
+                              <th style={{ background: theme.primary }} />
                             </tr>
+                          </thead>
+                          <tbody>
+                            {gridRows.map((row, i) => (
+                              <tr key={i} style={{ background: i % 2 ? "rgba(0,0,0,0.03)" : "transparent" }}>
+                                {screenForRun.grid.columns.map((c) => (
+                                  <td
+                                    key={c.bind}
+                                    onClick={() => screenForRun.grid.rowClick?.targetScreen && openRowForEdit(screenForRun.grid.rowClick.targetScreen, row)}
+                                    style={{ padding: pad, borderBottom: "1px solid rgba(0,0,0,0.08)", cursor: screenForRun.grid.rowClick ? "pointer" : "default" }}
+                                  >
+                                    {String(row[c.bind] ?? "")}
+                                  </td>
+                                ))}
+                                <td style={{ padding: pad, borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
+                                  <button
+                                    onClick={() => deleteGridRow(row, screenKeyField)}
+                                    style={{ background: "none", border: `1px solid ${theme.accent}`, color: theme.accent, borderRadius: `${theme.cornerRadius}px`, fontSize: "0.85em", padding: "3px 10px", cursor: "pointer" }}
+                                  >
+                                    Delete
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                      {runMessages.length > 0 && (
+                        <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
+                          {runMessages.map((m, i) => (
+                            <div key={i} style={{ fontSize: 13, color: m.messageType === "error" ? "#dc2626" : "inherit" }}>{m.value}</div>
                           ))}
-                        </tbody>
-                      </table>
-                    )}
-                    {runMessages.length > 0 && (
-                      <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
-                        {runMessages.map((m, i) => (
-                          <div key={i} style={{ fontSize: 13, color: m.messageType === "error" ? "var(--st-danger)" : "var(--st-text)" }}>{m.value}</div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 {activeElement && activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && (
-                  <div>
+                  <div style={{ background: theme.background, borderRadius: `${theme.cornerRadius}px`, padding: 18, fontFamily: theme.fontFamily, fontSize: `${theme.fontSize}px`, maxWidth: 420 }}>
                     <button className="studio-btn-secondary" onClick={() => setActiveElement(null)} style={{ marginBottom: 12 }}>← Back</button>
-                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>
-                      {runFieldValues[screenKeyField] ? "Edit" : "Run"}: {activeElement.name}
+                    {theme.logo && <img src={theme.logo} alt="" style={{ height: 28, marginBottom: 10, display: "block" }} onError={(e) => { e.target.style.display = "none"; }} />}
+                    <div style={{ fontWeight: 700, fontSize: "1.1em", marginBottom: 12, color: theme.primary }}>
+                      {runFieldValues[screenKeyField] ? "Edit" : "New"}: {activeElement.name}
                     </div>
                     {screenForRun.fields.map((f) => (
-                      <div key={f.bind} style={{ marginBottom: 10 }}>
-                        <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>{f.label}</label>
+                      <div key={f.bind} style={{ marginBottom: theme.density === "compact" ? 6 : 12 }}>
+                        <label style={{ fontSize: "0.85em", fontWeight: 600, display: "block", marginBottom: 4 }}>{f.label}</label>
                         <input
-                          className="studio-input"
-                          style={{ width: "100%" }}
+                          style={{
+                            width: "100%", boxSizing: "border-box", padding: theme.density === "compact" ? "5px 8px" : "8px 10px",
+                            borderRadius: `${theme.cornerRadius}px`, border: "1px solid #d1d5db", fontFamily: "inherit", fontSize: "inherit",
+                          }}
                           value={runFieldValues[f.bind] ?? ""}
                           onChange={(e) => setRunFieldValues((v) => ({ ...v, [f.bind]: e.target.value }))}
+                          onFocus={(e) => { e.target.style.borderColor = theme.accent; e.target.style.outline = "none"; }}
+                          onBlur={(e) => { e.target.style.borderColor = "#d1d5db"; }}
                         />
                       </div>
                     ))}
-                    <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
                       {screenForRun.buttons.map((b) => (
-                        <button key={b.action} className="studio-btn-primary" disabled={running} onClick={() => runAction(b.action)}>
+                        <button
+                          key={b.action}
+                          disabled={running}
+                          onClick={() => runAction(b.action)}
+                          style={{
+                            background: b.action === "delete" ? "none" : theme.primary, color: b.action === "delete" ? "#dc2626" : "#fff",
+                            border: b.action === "delete" ? "1px solid #dc2626" : "none", borderRadius: `${theme.cornerRadius}px`,
+                            padding: theme.density === "compact" ? "6px 14px" : "9px 18px", fontFamily: "inherit", fontSize: "inherit",
+                            fontWeight: 600, cursor: running ? "default" : "pointer", opacity: running ? 0.6 : 1,
+                          }}
+                        >
                           {running ? "Running…" : b.label}
                         </button>
                       ))}
@@ -430,7 +480,7 @@ export default function RuntimeEngine() {
                     {runMessages.length > 0 && (
                       <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
                         {runMessages.map((m, i) => (
-                          <div key={i} style={{ fontSize: 13, color: m.messageType === "error" ? "var(--st-danger)" : "var(--st-text)" }}>
+                          <div key={i} style={{ fontSize: "0.9em", color: m.messageType === "error" ? "#dc2626" : "inherit" }}>
                             {m.value}
                           </div>
                         ))}
