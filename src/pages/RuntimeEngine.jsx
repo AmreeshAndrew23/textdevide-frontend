@@ -38,6 +38,9 @@ export default function RuntimeEngine() {
   const [newXml, setNewXml] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
+  const [genDescription, setGenDescription] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState("");
 
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -55,13 +58,27 @@ export default function RuntimeEngine() {
 
   useEffect(() => { loadApplications(); }, []);
 
+  function handleGenerate() {
+    if (!genDescription.trim()) return;
+    setGenerating(true);
+    setGenError("");
+    api.post("/runtime-applications/generate", { description: genDescription })
+      .then((res) => setNewXml(res.data.xml)) // fills the XML textarea below for review/editing — nothing is created yet
+      .catch((e) => setGenError(e.response?.data?.message || e.response?.data?.detail || "Failed to generate — try rephrasing the description."))
+      .finally(() => setGenerating(false));
+  }
+
+  function closeNewModal() {
+    setShowNewModal(false); setNewName(""); setNewXml(""); setGenDescription(""); setGenError(""); setCreateError("");
+  }
+
   function handleCreate() {
     if (!newName.trim() || !newXml.trim()) return;
     setCreating(true);
     setCreateError("");
     api.post("/runtime-applications", { name: newName, xml: newXml })
       .then((res) => {
-        setShowNewModal(false); setNewName(""); setNewXml("");
+        closeNewModal();
         return loadApplications().then(() => selectApplication(res.data.id));
       })
       .catch((e) => setCreateError(e.response?.data?.message || e.response?.data?.detail || "Failed to create this application."))
@@ -123,15 +140,32 @@ export default function RuntimeEngine() {
       {error && <div className="studio-card" style={{ padding: 18, color: "var(--st-danger)", fontSize: 13.5, marginBottom: 20 }}>{error}</div>}
 
       {showNewModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }} onClick={() => setShowNewModal(false)}>
-          <div className="studio-card" style={{ width: 640, padding: 24 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }} onClick={closeNewModal}>
+          <div className="studio-card" style={{ width: 640, padding: 24, maxHeight: "90vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>New Application</div>
             <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 16 }}>
-              Paste a complete &lt;Application&gt; XML document.
+              Describe it in plain English and generate the XML, or paste/edit it directly below.
             </p>
+
+            <div style={{ border: "1px solid var(--st-border)", borderRadius: 8, padding: 14, marginBottom: 16 }}>
+              <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Describe the application</label>
+              <textarea
+                className="studio-textarea"
+                value={genDescription}
+                onChange={(e) => setGenDescription(e.target.value)}
+                placeholder="An insurance claims app with policies, claims, and adjusters. Each policy belongs to a customer and can have many claims; each claim is assigned to one adjuster and has a status and amount."
+                rows={3}
+                style={{ width: "100%", marginBottom: 8, resize: "vertical" }}
+              />
+              <button className="studio-btn-secondary" onClick={handleGenerate} disabled={generating || !genDescription.trim()}>
+                {generating ? "Generating…" : "Generate XML"}
+              </button>
+              {genError && <div style={{ color: "var(--st-danger)", fontSize: 12.5, marginTop: 8 }}>{genError}</div>}
+            </div>
+
             <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Name</label>
-            <input className="studio-input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Procurement" style={{ width: "100%", marginBottom: 12 }} autoFocus />
-            <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Application XML</label>
+            <input className="studio-input" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Procurement" style={{ width: "100%", marginBottom: 12 }} />
+            <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Application XML — review/edit before creating</label>
             <textarea
               className="studio-textarea"
               value={newXml}
@@ -145,7 +179,7 @@ export default function RuntimeEngine() {
               <button className="studio-btn-primary" onClick={handleCreate} disabled={creating || !newName.trim() || !newXml.trim()} style={{ flex: 1 }}>
                 {creating ? "Creating…" : "Create Application"}
               </button>
-              <button className="studio-btn-secondary" onClick={() => setShowNewModal(false)}>Cancel</button>
+              <button className="studio-btn-secondary" onClick={closeNewModal}>Cancel</button>
             </div>
           </div>
         </div>
