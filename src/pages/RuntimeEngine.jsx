@@ -28,6 +28,18 @@ function parseScreenForRun(xml) {
   return { fields, buttons };
 }
 
+// Reconstructs the whole <Application> document from its stored pieces — the backend keeps one
+// element per Neo4j node (see runtimeEngine/applicationStore.ts), never the original whole-document
+// string, so "view it in one stretch" means rebuilding it client-side from detail.elements, in the
+// same order the server already returns them (position-sorted).
+function buildFullXml(detail) {
+  const attrs = [`name="${detail.name}"`];
+  if (detail.theme) attrs.push(`theme="${detail.theme}"`);
+  if (detail.database) attrs.push(`database="${detail.database}"`);
+  const body = detail.elements.map((el) => el.xml.replace(/^/gm, "  ")).join("\n");
+  return `<Application ${attrs.join(" ")}>\n${body}\n</Application>`;
+}
+
 export default function RuntimeEngine() {
   const navigate = useNavigate();
   const [applications, setApplications] = useState(null);
@@ -47,6 +59,7 @@ export default function RuntimeEngine() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeTag, setActiveTag] = useState("Entity");
   const [activeElement, setActiveElement] = useState(null); // { tag, name, xml }
+  const [showFullXml, setShowFullXml] = useState(false);
 
   const [runFieldValues, setRunFieldValues] = useState({});
   const [runMessages, setRunMessages] = useState([]);
@@ -90,6 +103,7 @@ export default function RuntimeEngine() {
     setDetail(null);
     setActiveElement(null);
     setRunMessages([]);
+    setShowFullXml(false);
     setDetailLoading(true);
     api.get(`/runtime-applications/${id}`)
       .then((res) => { setDetail(res.data); setActiveTag("Entity"); })
@@ -221,14 +235,24 @@ export default function RuntimeEngine() {
           {selectedId && !detailLoading && detail && (
             <div style={{ display: "flex", height: "100%" }}>
               <div style={{ width: 160, borderRight: "1px solid var(--st-border)", padding: 12 }}>
+                <div
+                  onClick={() => { setShowFullXml(true); setActiveElement(null); }}
+                  style={{
+                    padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 10,
+                    fontWeight: 600, background: showFullXml ? "var(--st-accent)" : "transparent",
+                    color: showFullXml ? "#fff" : "inherit", borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
+                  }}
+                >
+                  📄 Full XML
+                </div>
                 {ELEMENT_TAGS.map((tag) => (
                   <div
                     key={tag}
-                    onClick={() => { setActiveTag(tag); setActiveElement(null); }}
+                    onClick={() => { setActiveTag(tag); setActiveElement(null); setShowFullXml(false); }}
                     style={{
                       padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 2,
-                      background: activeTag === tag ? "var(--st-accent)" : "transparent",
-                      color: activeTag === tag ? "#fff" : "inherit",
+                      background: !showFullXml && activeTag === tag ? "var(--st-accent)" : "transparent",
+                      color: !showFullXml && activeTag === tag ? "#fff" : "inherit",
                     }}
                   >
                     {tag} ({detail.elements.filter((e) => e.tag === tag).length})
@@ -236,7 +260,23 @@ export default function RuntimeEngine() {
                 ))}
               </div>
               <div style={{ flex: 1, padding: 16 }}>
-                {!activeElement && (
+                {showFullXml && (
+                  <div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14 }}>Full Application XML</div>
+                      <button
+                        className="studio-btn-secondary"
+                        onClick={() => navigator.clipboard?.writeText(buildFullXml(detail))}
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12, maxHeight: "70vh" }}>
+                      {buildFullXml(detail)}
+                    </pre>
+                  </div>
+                )}
+                {!showFullXml && !activeElement && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {elementsByTag.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No {activeTag} elements.</div>}
                     {elementsByTag.map((el) => (
