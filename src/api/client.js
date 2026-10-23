@@ -7,6 +7,10 @@ export const API_ORIGIN = API_URL.replace(/\/api\/?$/, "");
 
 const api = axios.create({
   baseURL: API_URL,
+  // Needed so the browser sends/accepts the Runtime Engine's own per-application end-user session
+  // cookie (see backend-node's runtimeEngine/appAuth.ts) — harmless for every other call, which
+  // keeps authenticating via the Bearer token above and has no cookie to send anyway.
+  withCredentials: true,
 });
 
 api.interceptors.request.use((config) => {

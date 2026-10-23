@@ -13,6 +13,7 @@ import ThemePicker from "../components/ThemePicker";
 import AppShell from "../components/AppShell"; // eslint-disable-line no-unused-vars -- kept for rollback; the rendered page now carries its own equivalent shell
 import { ERDiagram } from "../components/ERDiagram";
 
+// eslint-disable-next-line no-unused-vars -- the New Project modal is name-only now; kept for rollback
 const LANGUAGES = ["Python", "Java", "JavaScript", "TypeScript", "C#", "Go", "Ruby", "PHP"];
 const FRONTEND_LANGUAGES = ["React", "Angular", "Vue", "Flutter", "HTML/CSS", "Next.js", "Svelte"];
 
@@ -112,9 +113,15 @@ export default function Dashboard() {
 
   const [showNewModal, setShowNewModal] = useState(false);
   const [newName, setNewName] = useState("");
+  // The New Project modal is name-only now (see below) — these four are unused, kept for
+  // rollback rather than deleted, same convention as the imports above.
+  // eslint-disable-next-line no-unused-vars
   const [newLanguage, setNewLanguage] = useState("Python");
+  // eslint-disable-next-line no-unused-vars
   const [newFrontendLang, setNewFrontendLang] = useState("React");
+  // eslint-disable-next-line no-unused-vars
   const [newTheme, setNewTheme] = useState("indigo");
+  // eslint-disable-next-line no-unused-vars
   const [newChosenDomainId, setNewChosenDomainId] = useState("");
   const [chosenDomains, setChosenDomains] = useState(null);
 
@@ -335,10 +342,27 @@ export default function Dashboard() {
     }
   };
 
+  // Projects are now Applications built from the Runtime Engine's vocabulary (see
+  // runtimeEngine/) — the old /projects route is retired. Mapped into the same {id, name,
+  // status, language} shape this sidebar already renders (SideItem, tblCount) so that code
+  // doesn't need touching; there's no draft/finalized distinction for an Application, so
+  // everything shows under "Drafts". `entities` (used for the old table-count badge) and
+  // `language` (the old tech-stack badge) have no equivalent — table count instead reads however
+  // many Entity elements the Application actually has.
   const fetchProjects = async () => {
-    try { setProjects((await api.get("/projects")).data); } catch (e) { console.error(e); }
+    try {
+      const apps = (await api.get("/runtime-applications")).data;
+      setProjects(apps.map(a => ({
+        id: a.id, name: a.name, status: "draft", language: `${a.elementCounts?.Screen || 0} screens`,
+        entities: JSON.stringify({ tables: new Array(a.elementCounts?.Entity || 0).fill({}) }),
+        createdAt: a.createdAt,
+      })));
+    } catch (e) { console.error(e); }
   };
 
+  // No longer called — opening a project now navigates to its Runtime Engine detail page (see
+  // handleSelect below) instead of this old Architect View. Kept for rollback, not deleted.
+  // eslint-disable-next-line no-unused-vars
   const selectProject = (data) => {
     setSelectedProject(data);
     setDescription(data.description || "");
@@ -368,24 +392,20 @@ export default function Dashboard() {
   const handleCreateProject = async () => {
     if (!newName.trim()) return;
     try {
-      const res = await api.post("/projects", {
-        name: newName, language: newLanguage, frontend_language: newFrontendLang, theme: newTheme,
-        chosen_domain_id: newChosenDomainId ? Number(newChosenDomainId) : undefined,
-      });
-      setProjects([res.data, ...projects]);
-      selectProject(res.data);
-      setShowNewModal(false); setNewName(""); setNewTheme("indigo"); setNewChosenDomainId("");
+      const res = await api.post("/runtime-applications", { name: newName });
+      setShowNewModal(false); setNewName("");
+      navigate(`/runtime-engine?id=${res.data.id}`);
     } catch (e) { console.error(e); }
   };
 
-  const handleSelect = async (p) => {
-    try { selectProject((await api.get(`/projects/${p.id}`)).data); } catch (e) { console.error(e); }
-  };
+  // Opening a project now means opening its Runtime Engine detail page — selectProject's whole
+  // Architect View (schema/screens/domain-seed editor) was for the old engine and is retired.
+  const handleSelect = (p) => navigate(`/runtime-engine?id=${p.id}`);
 
   const handleDelete = async (id, e) => {
     e.stopPropagation();
     try {
-      await api.delete(`/projects/${id}`);
+      await api.delete(`/runtime-applications/${id}`);
       setProjects(projects.filter(p => p.id !== id));
       if (selectedProject?.id === id) setSelectedProject(null);
     } catch (e) { console.error(e); }
@@ -1471,34 +1491,19 @@ export default function Dashboard() {
       )}
 
       {/* Modal */}
+      {/* Project creation is name-only now — built from the Runtime Engine's Application
+          vocabulary (see runtimeEngine/), not the old backend/frontend-language-driven engine.
+          Describing what the project actually does happens right after, on its own detail page. */}
       {showNewModal && (
         <div style={S.overlay} onClick={() => setShowNewModal(false)}>
           <div className="card fade-in" style={S.modal} onClick={e => e.stopPropagation()}>
             <h3 style={S.modalH}>Create New Project</h3>
-            <p style={S.modalSub}>Give your project a name and choose a backend and frontend language</p>
+            <p style={S.modalSub}>Give it a name — you'll describe what it does next.</p>
             <label style={S.lbl}>Project Name</label>
-            <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="My awesome project" style={S.inp} autoFocus />
-            <label style={S.lbl}>Backend Language</label>
-            <select value={newLanguage} onChange={e => setNewLanguage(e.target.value)} style={S.sel}>
-              {LANGUAGES.map(l => <option key={l}>{l}</option>)}
-            </select>
-            <label style={S.lbl}>Frontend Framework</label>
-            <select value={newFrontendLang} onChange={e => setNewFrontendLang(e.target.value)} style={S.sel}>
-              {FRONTEND_LANGUAGES.map(l => <option key={l}>{l}</option>)}
-            </select>
-            <label style={S.lbl}>Color Theme</label>
-            <div style={{ marginBottom: 4 }}>
-              <ThemePicker value={newTheme} onChange={setNewTheme} />
-            </div>
-            {chosenDomains?.length > 0 && (
-              <>
-                <label style={S.lbl}>Start from a domain (optional)</label>
-                <select value={newChosenDomainId} onChange={e => setNewChosenDomainId(e.target.value)} style={S.sel}>
-                  <option value="">Blank project</option>
-                  {chosenDomains.map(c => <option key={c.id} value={c.id}>{c.domain_name}</option>)}
-                </select>
-              </>
-            )}
+            <input
+              value={newName} onChange={e => setNewName(e.target.value)} placeholder="Insurance Claims Management" style={S.inp} autoFocus
+              onKeyDown={e => { if (e.key === "Enter" && newName.trim()) handleCreateProject(); }}
+            />
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
               <button className="btn-primary" onClick={handleCreateProject} style={{ flex: 1, justifyContent: "center" }}>Create Project</button>
               <button className="btn-secondary" onClick={() => setShowNewModal(false)}>Cancel</button>
@@ -1517,13 +1522,12 @@ export default function Dashboard() {
         </button>
         {/* Outside the project list on purpose — a shared catalog you browse BEFORE starting a
             project, not a per-project section like Workbench/Schema/UI below. */}
-        <button className="btn-secondary" onClick={() => navigate("/domains")} style={{ width: "100%", justifyContent: "center", marginBottom: 10 }}>
+        <button className="btn-secondary" onClick={() => navigate("/domains")} style={{ width: "100%", justifyContent: "center", marginBottom: 24 }}>
           🗂️ Domains
         </button>
-        {/* Its own separate space, not nested under any project — see pages/RuntimeEngine.jsx. */}
-        <button className="btn-secondary" onClick={() => navigate("/runtime-engine")} style={{ width: "100%", justifyContent: "center", marginBottom: 24 }}>
-          ⚙️ Runtime Engine
-        </button>
+        {/* The separate "⚙️ Runtime Engine" button that used to live here is gone — Projects
+            above ARE Applications now (same list, same /runtime-engine detail page via a card
+            click), so a second entry point to the identical list was just redundant. */}
 
         <div style={{ flex: 1, overflowY: "auto" }}>
           <SectionHeader text="DRAFTS" count={drafts.length} />
