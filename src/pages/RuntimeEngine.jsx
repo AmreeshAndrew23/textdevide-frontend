@@ -1,7 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { GoogleLogin } from "@react-oauth/google";
 import api, { API_ORIGIN } from "../api/client";
 import { ERDiagram } from "../components/ERDiagram";
+import { useAuth } from "../context/AuthContext";
+import {
+  Users, UserCog, Building2, Home, Folder, DollarSign, Clock, Palmtree, Warehouse,
+  ShoppingCart, Receipt, CreditCard, Shield, Wrench, ClipboardCheck, FileText,
+  GraduationCap, BookOpen, HeartPulse, Stethoscope, Lock, NotebookPen, Car, Package, Briefcase,
+  Search, ChevronDown, X as XIcon, Download,
+} from "lucide-react";
 
 // The second, independent "Runtime Engine" — its own standalone space, NOT nested under any
 // project (confirmed with the user: "we need to have a separate space for both"). Lists/creates
@@ -10,6 +18,10 @@ import { ERDiagram } from "../components/ERDiagram";
 // Dashboard/project workflow, which this page never touches.
 
 const ELEMENT_TAGS = ["Entity", "Relationship", "Validation", "DataSource", "Screen", "Action", "Theme", "Session", "Auditing", "AutoNumber"];
+
+// GitHub client ids are not secret (only the server-held CLIENT_SECRET is) — safe to read
+// client-side the same way VITE_GOOGLE_CLIENT_ID already is for the Studio's own login page.
+const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || "";
 
 // Minimal client-side extraction (native DOMParser, no library) of just enough from a Screen's
 // raw XML to render a bare, unstyled Run panel — UIField label/bind, Button label/action, and (for
@@ -44,11 +56,24 @@ function parseScreenForRun(xml) {
         })(),
       }
     : null;
-  return { entity, fields, buttons, grid };
+  const requiresRoleAttr = root.getAttribute("requiresRole");
+  const requiresRole = requiresRoleAttr ? requiresRoleAttr.split(",").map((r) => r.trim()).filter(Boolean) : [];
+  return { entity, fields, buttons, grid, requiresRole: requiresRole.length ? requiresRole : null };
 }
 
 // Entity field metadata (type/required/enum values) — drives real input controls (date pickers,
 // number inputs, enum dropdowns, required markers) instead of treating every field as plain text.
+// Same fixed conventions the backend's isAccount Entity must match exactly (see
+// applicationModel.ts's assertAccountEntityShape/looksLikeAccountEntity) — kept as literal sets
+// here too, deliberately not imported (that module is server-only), same tradeoff as every other
+// small duplicated helper in this engine. TWO shapes, same dual-shape reasoning as the backend:
+// LEGACY (username-based) is what already-generated apps still use; CURRENT (email-based) is what
+// every app generates from now on (email identity, OTP verification, OAuth sign-in).
+const LEGACY_ACCOUNT_FIELD_NAMES = new Set(["id", "username", "passwordHash", "mustChangePassword"]);
+const CURRENT_ACCOUNT_FIELD_NAMES = new Set([
+  "id", "email", "passwordHash", "mustChangePassword", "firstName", "lastName", "dob", "emailVerified", "authProvider",
+]);
+
 function parseEntityForRun(xml) {
   const doc = new DOMParser().parseFromString(xml, "text/xml");
   const root = doc.documentElement;
@@ -59,7 +84,22 @@ function parseEntityForRun(xml) {
     required: f.getAttribute("required") === "true",
     values: Array.from(f.querySelectorAll("Value")).map((v) => v.textContent.trim()).filter(Boolean),
   }));
-  return { fields, isAccount: root.getAttribute("isAccount") === "true" };
+  // Defense in depth, same reasoning as applicationModel.ts's parseEntityElement: the AI
+  // sometimes forgets isAccount="true" even when it gets the User entity's field shape exactly
+  // right — an Entity literally named "User" with exactly one of the two known-good field sets IS
+  // the account entity, attribute or not, so login/signup never silently breaks over a missed
+  // attribute.
+  const name = root.getAttribute("name") || "";
+  const fieldNames = fields.map((f) => f.name);
+  const matchesShape = (shape) => fieldNames.length === shape.size && fieldNames.every((n) => shape.has(n));
+  const looksLikeAccount = name === "User" && (matchesShape(LEGACY_ACCOUNT_FIELD_NAMES) || matchesShape(CURRENT_ACCOUNT_FIELD_NAMES));
+  return {
+    fields, isAccount: root.getAttribute("isAccount") === "true" || looksLikeAccount, icon: root.getAttribute("icon") || null,
+    // Whether this account entity supports email/OTP/OAuth (the current shape) vs the older,
+    // plain username/password convention — drives whether the Run panel shows the OAuth buttons
+    // and the VerifyEmail/ForgotPassword/ResetPassword screens at all.
+    hasEmailIdentity: fieldNames.includes("email"),
+  };
 }
 
 function parseRelationshipForRun(xml) {
@@ -73,35 +113,258 @@ function parseDataSourceForRun(xml) {
   return { entity: selectEl?.getAttribute("entity") || null };
 }
 
+// Minimal client-side extraction of a Validation/Action element's own entity binding + a short
+// human-readable summary — same spirit as parseScreenForRun above, just enough for the ER Map's
+// "every node, and what it's connected to" tables, not a full typed model (that's applicationModel.ts's
+// job, server-only).
+function parseValidationForRun(xml) {
+  const el = new DOMParser().parseFromString(xml, "text/xml").documentElement;
+  const conditionEl = el.querySelector("Condition");
+  const messageEl = el.querySelector("Message");
+  return {
+    id: el.getAttribute("id") || "",
+    entity: el.getAttribute("entity"),
+    when: el.getAttribute("when") || "onSave",
+    onViolation: el.getAttribute("onViolation") || "reject",
+    test: conditionEl?.getAttribute("test") || "",
+    message: messageEl ? messageEl.textContent.trim() : "",
+  };
+}
+
+function parseActionForRun(xml) {
+  const el = new DOMParser().parseFromString(xml, "text/xml").documentElement;
+  const steps = Array.from(el.querySelectorAll("Steps > *")).map((s) => {
+    if (s.tagName === "Set") return `Set ${s.getAttribute("field")} = ${s.getAttribute("value")}`;
+    if (s.tagName === "Save") return "Save";
+    if (s.tagName === "Notify") return `Notify ${s.getAttribute("to")}`;
+    return s.tagName;
+  });
+  return { entity: el.getAttribute("entity"), steps };
+}
+
 function humanize(name) {
   return (name || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
 }
 
-// Keyword-matched, not exhaustive — a nav/dashboard module should look like something specific
-// rather than a generic document for the common cases, with a sensible generic fallback for
-// anything unmatched. Checked in order, first match wins.
-const MODULE_ICON_RULES = [
-  [/employee|staff|designation/i, "👤"], [/department/i, "🏢"], [/project/i, "📁"],
-  [/payroll|salary/i, "💰"], [/attendance/i, "🕒"], [/leave/i, "🌴"],
-  [/vendor|supplier/i, "🏭"], [/purchase|procurement|order/i, "🛒"], [/invoice|bill|payment/i, "🧾"],
-  [/customer|client/i, "🧑‍💼"], [/claim|insurance|policy/i, "📋"], [/student/i, "🎓"],
-  [/course|class|subject/i, "📚"], [/exam/i, "📝"], [/patient/i, "🩺"], [/doctor/i, "⚕️"],
-  [/role|access|permission/i, "🔐"], [/^user|account/i, "👥"], [/note|task|todo/i, "🗒️"],
-  [/timesheet|hours/i, "⏱️"], [/vehicle|car/i, "🚗"], [/inventory|stock|product/i, "📦"],
-];
-function iconForEntity(entityName) {
-  for (const [re, icon] of MODULE_ICON_RULES) if (re.test(entityName || "")) return icon;
-  return "📄";
+function greetingForHour(hour) {
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
 }
 
-const AUTH_SCREEN_NAMES = new Set(["Login", "Signup", "ChangePassword"]);
+function initialsFor(name) {
+  const parts = (name || "").trim().split(/[\s._@]+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return (parts[0][0] + (parts[1]?.[0] || "")).toUpperCase();
+}
+
+function displayNameFor(identity) {
+  if (!identity) return "there";
+  const base = identity.includes("@") ? identity.split("@")[0] : identity;
+  return base.replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Real line-icons (lucide-react), not emoji — a module's icon is resolved in two steps, the same
+// "declared value, then structural fallback" pattern already used for isAccount detection:
+//   1. The generating AI can name an icon directly via <Entity icon="...">, chosen from this same
+//      whitelist (see aiService.ts's prompt) — lets a genuinely novel entity (something the keyword
+//      rules below were never written for) still get a sensible icon instead of the generic one.
+//   2. Failing that, keyword-matched against the entity name, checked in order, first match wins.
+//   3. "file-text" as the last-resort generic fallback.
+const ICON_COMPONENTS = {
+  users: Users, "user-cog": UserCog, building: Building2, home: Home, folder: Folder,
+  "dollar-sign": DollarSign, clock: Clock, "palm-tree": Palmtree, warehouse: Warehouse,
+  "shopping-cart": ShoppingCart, receipt: Receipt, "credit-card": CreditCard, shield: Shield,
+  wrench: Wrench, "clipboard-check": ClipboardCheck, "file-text": FileText,
+  "graduation-cap": GraduationCap, "book-open": BookOpen, "heart-pulse": HeartPulse,
+  stethoscope: Stethoscope, lock: Lock, notebook: NotebookPen, car: Car, package: Package,
+  briefcase: Briefcase,
+};
+const MODULE_ICON_RULES = [
+  [/employee|staff/i, "users"], [/designation|position/i, "briefcase"],
+  [/department|branch|office\b/i, "building"], [/property|^unit\b/i, "home"],
+  [/lease|contract/i, "file-text"], [/tenant|customer|client/i, "user-cog"],
+  [/vendor|supplier/i, "warehouse"], [/project/i, "folder"],
+  [/payroll|salary/i, "dollar-sign"], [/attendance|timesheet|hours/i, "clock"],
+  [/leave|holiday/i, "palm-tree"], [/purchase|procurement|^order\b/i, "shopping-cart"],
+  [/invoice|bill\b/i, "receipt"], [/payment/i, "credit-card"],
+  [/claim|insurance|policy/i, "shield"], [/maintenance|repair/i, "wrench"],
+  [/inspection|audit/i, "clipboard-check"], [/document/i, "file-text"],
+  [/student/i, "graduation-cap"], [/course|class|subject|training/i, "book-open"],
+  [/exam/i, "clipboard-check"], [/patient/i, "heart-pulse"], [/doctor/i, "stethoscope"],
+  [/role|access|permission/i, "lock"], [/^user|account/i, "user-cog"],
+  [/note|task|todo|announcement/i, "notebook"], [/vehicle|^car\b/i, "car"],
+  [/inventory|stock|product|asset/i, "package"],
+];
+function iconNameForEntity(entityName, explicitIcon) {
+  if (explicitIcon && ICON_COMPONENTS[explicitIcon]) return explicitIcon;
+  for (const [re, name] of MODULE_ICON_RULES) if (re.test(entityName || "")) return name;
+  return "file-text";
+}
+function ModuleIcon({ entity, icon, size = 17, style }) {
+  const Cmp = ICON_COMPONENTS[iconNameForEntity(entity, icon)];
+  return <Cmp size={size} strokeWidth={1.75} style={style} />;
+}
+
+// Same keyword-matched approach as the icon rules, grouping modules into a left-nav section
+// header (screenshot reference: "PEOPLE" / "TIME" / "PROJECTS") instead of one flat list — checked
+// in order, first match wins, with "General" as the catch-all for anything unmatched.
+const MODULE_GROUP_RULES = [
+  [/employee|staff|designation|^user|account|role|access/i, "People"],
+  [/department|organization|branch|office/i, "Organization"],
+  [/attendance|leave|holiday|timesheet|punch|shift/i, "Time"],
+  [/project|assignment|task|milestone/i, "Projects"],
+  [/payroll|salary|reimbursement|expense|invoice|bill|payment|budget|claim/i, "Finance"],
+  [/purchase|vendor|supplier|procurement|order|asset|inventory|stock|product/i, "Operations"],
+  [/training|course|class|subject|exam|enrollment/i, "Learning"],
+  [/announcement|document|policy|note/i, "Workspace"],
+];
+function groupForEntity(entityName) {
+  for (const [re, group] of MODULE_GROUP_RULES) if (re.test(entityName || "")) return group;
+  return "General";
+}
+
+const AUTH_SCREEN_NAMES = new Set(["Login", "Signup", "ChangePassword", "VerifyEmail", "ForgotPassword", "ResetPassword"]);
+// Reachable before any session exists (from a "Forgot password?" link on Login, or right after a
+// successful register), but — unlike Login/Signup — they don't get the tab switcher, just a plain
+// "← Back to Login" so there's always a way out.
+const PRE_LOGIN_AUX_SCREENS = new Set(["VerifyEmail", "ForgotPassword", "ResetPassword"]);
+
+// A small, reusable "every node of this type, and which Entity it's connected to" table — used by
+// the ER Map's Validations/Screens/Actions/DataSources sections below the schema table, so the
+// graph's non-Entity nodes (and their FOR_ENTITY connection) are visible from inside the Studio
+// instead of only in Neo4j Browser.
+function ElementTable({ title, columns, rows, emptyLabel }) {
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{title}</div>
+      {rows.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: "var(--st-muted)" }}>{emptyLabel}</div>
+      ) : (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ background: "rgba(0,0,0,0.05)" }}>
+              {columns.map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontWeight: 600 }}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} style={{ borderBottom: "1px solid var(--st-border)" }}>
+                {row.map((cell, j) => <td key={j} style={{ padding: "6px 10px" }}>{cell}</td>)}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// A real searchable lookup picker for any FK/dropdown field, universal across every generated
+// app (driven purely by the optionsFrom/DataSource data every app already has — no per-app XML
+// change needed). Replaces a plain <select>, which is fine for a handful of rows but unusable
+// once the related entity (Employee, Vendor, ...) has hundreds — type to filter, click to pick.
+function LookupPicker({ value, options, disabled, theme, placeholder, onChange, inputStyle }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e) { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false); }
+    function onKey(e) { if (e.key === "Escape") setOpen(false); }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const loading = options === "loading";
+  const list = Array.isArray(options) ? options : [];
+  const selected = list.find((o) => String(o.value) === String(value));
+  const q = query.trim().toLowerCase();
+  const filtered = q ? list.filter((o) => o.label.toLowerCase().includes(q)) : list;
+
+  return (
+    <div ref={rootRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        disabled={disabled || loading}
+        onClick={() => { setOpen((v) => !v); setQuery(""); }}
+        style={{
+          ...inputStyle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+          cursor: disabled || loading ? "default" : "pointer", textAlign: "left", font: "inherit",
+          color: selected ? inputStyle.color : "#9ca3af",
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {loading ? "Loading…" : selected ? selected.label : (placeholder || "— Select —")}
+        </span>
+        {!disabled && !loading && <ChevronDown size={15} style={{ flexShrink: 0, color: "#9ca3af" }} />}
+      </button>
+      {open && !disabled && !loading && (
+        <div
+          style={{
+            position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
+            background: "#fff", border: `1px solid ${theme.accent}55`, borderRadius: `${theme.cornerRadius}px`,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: "1px solid #e5e7eb" }}>
+            <Search size={14} style={{ color: "#9ca3af", flexShrink: 0 }} />
+            <input
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Type to search…"
+              style={{ flex: 1, border: "none", outline: "none", font: "inherit", fontSize: "0.9em" }}
+            />
+            {value !== "" && value != null && (
+              <button
+                type="button"
+                onClick={() => { onChange(""); setOpen(false); }}
+                title="Clear"
+                style={{ border: "none", background: "none", cursor: "pointer", color: "#9ca3af", display: "flex" }}
+              >
+                <XIcon size={14} />
+              </button>
+            )}
+          </div>
+          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding: "10px 12px", fontSize: "0.85em", color: "#9ca3af" }}>No matches.</div>
+            ) : (
+              filtered.map((o) => (
+                <div
+                  key={o.value}
+                  onClick={() => { onChange(o.value); setOpen(false); }}
+                  style={{
+                    padding: "7px 12px", fontSize: "0.9em", cursor: "pointer",
+                    background: String(o.value) === String(value) ? `${theme.accent}14` : "transparent",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = `${theme.accent}22`; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = String(o.value) === String(value) ? `${theme.accent}14` : "transparent"; }}
+                >
+                  {o.label}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // What a real running app's left nav actually is: one entry per ENTITY (grouped by what the
 // screens are about), not a raw list of every Screen element's own XML name — "I have to click
 // one screen name, enter detail, come back out" is the tag-browsing/inspection view, not this.
 // Each module's primary screen is its Grid (browse) screen when one exists, since that's the
 // natural "home" for an entity; an entity with only a form (no browse) uses that form directly.
-function buildAppModules(detail) {
+// role is the current session's resolved AccessRole name (null for an app with no RBAC, or before
+// a role-gated app finishes logging in) — a module whose primary screen declares requiresRole and
+// doesn't include this role is left out of the array ENTIRELY, not just hidden in the nav, so
+// loadModuleCounts never fetches its /rows endpoint for a user who shouldn't see it at all.
+function buildAppModules(detail, role = null) {
   if (!detail) return [];
   const screens = detail.elements.filter((e) => e.tag === "Screen" && !AUTH_SCREEN_NAMES.has(e.name));
   const parsedByName = new Map(screens.map((el) => [el.name, { el, parsed: parseScreenForRun(el.xml) }]));
@@ -112,13 +375,19 @@ function buildAppModules(detail) {
     if (!entityName || seen.has(entityName)) continue;
     seen.add(entityName);
     const gridEntry = [...parsedByName.values()].find((e) => e.parsed.entity === entityName && e.parsed.grid);
+    const primaryRequiresRole = (gridEntry || parsedByName.get(el.name)).parsed.requiresRole;
+    if (primaryRequiresRole && (!role || !primaryRequiresRole.includes(role))) continue;
     // The form screen for creating/editing a row of this entity — preferred via the grid's own
     // rowClick target (the AI always wires these together), falling back to any other form
     // screen bound to the same entity, so "+ New" has somewhere real to go even without a grid.
     const formEntry = (gridEntry && [...parsedByName.values()].find((e) => e.el.name === gridEntry.parsed.grid?.rowClick?.targetScreen))
       || [...parsedByName.values()].find((e) => e.parsed.entity === entityName && !e.parsed.grid);
+    // The entity's own declared icon (if the AI set one), read straight off its <Entity> element —
+    // ModuleIcon falls back to the keyword rules itself when this is null.
+    const entityEl = detail.elements.find((e) => e.tag === "Entity" && e.name === entityName);
     modules.push({
-      key: entityName, label: humanize(entityName),
+      key: entityName, label: humanize(entityName), group: groupForEntity(entityName),
+      icon: entityEl ? parseEntityForRun(entityEl.xml).icon : null,
       screenEl: (gridEntry || parsedByName.get(el.name)).el,
       formScreenEl: formEntry?.el || null,
     });
@@ -162,6 +431,28 @@ function buildFullXml(detail) {
   if (detail.database) attrs.push(`database="${detail.database}"`);
   const body = detail.elements.map((el) => el.xml.replace(/^/gm, "  ")).join("\n");
   return `<Application ${attrs.join(" ")}>\n${body}\n</Application>`;
+}
+
+// Client-side file save — a Blob + temporary <a download>, the same pattern this engine's own
+// generated apps use for CSV export (see aiService.ts's prompt) — no server round-trip needed
+// since buildFullXml already has everything.
+function downloadTextFile(filename, contents, mimeType = "application/xml") {
+  const blob = new Blob([contents], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// A safe, readable filename from the application's own name — strips anything that isn't
+// alphanumeric/space/dash/underscore so it never produces an invalid filename on any OS.
+function xmlFilenameFor(name) {
+  const safe = (name || "application").trim().replace(/[^a-zA-Z0-9 _-]/g, "").replace(/\s+/g, "-") || "application";
+  return `${safe}.xml`;
 }
 
 // Converts this Application's Entity/Relationship elements into the SAME {tables:[{name,
@@ -213,6 +504,7 @@ function AppBar({ theme, appName }) {
 export default function RuntimeEngine() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { user } = useAuth();
   const [applications, setApplications] = useState(null);
   const [error, setError] = useState("");
 
@@ -231,6 +523,8 @@ export default function RuntimeEngine() {
   const [activeElement, setActiveElement] = useState(null); // { tag, name, xml }
   const [showFullXml, setShowFullXml] = useState(false);
   const [showErMap, setShowErMap] = useState(false);
+  const [showAuditLog, setShowAuditLog] = useState(false);
+  const [auditEvents, setAuditEvents] = useState(null);
 
   // The "Describe your application" panel — works identically for a brand-new, empty application
   // and for adding more to an existing one later (one entity now, more later; screens now or
@@ -261,8 +555,17 @@ export default function RuntimeEngine() {
   // selected, since each application's session is independent.
   const [loggedIn, setLoggedIn] = useState(false);
   const [loggedInIdentity, setLoggedInIdentity] = useState(null);
+  // RBAC — the resolved AccessRole name from the session's login response (see
+  // applicationEngine.ts's runLogin), or null for an app that doesn't use the optional roleId
+  // convention. Drives which modules buildAppModules even includes, not just which nav entries are
+  // visually hidden — a role-restricted module's /rows endpoint should never be called at all for
+  // a user who shouldn't see it, and the backend's requiresRole check is the real enforcement
+  // either way (this is purely so a disallowed user doesn't see the module at all).
+  const [loggedInRole, setLoggedInRole] = useState(null);
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [restoringKey, setRestoringKey] = useState(null);
 
   // Full-screen "use the real app" mode — a proper left nav grouped by entity (buildAppModules),
   // not the Studio's raw per-tag element browser. Entered automatically once an application has
@@ -274,6 +577,11 @@ export default function RuntimeEngine() {
   // handleGenerate, pendingXml, handleApplyDescription) — just a different entry point, so a
   // problem noticed while actually using the app doesn't require exiting to the Studio first.
   const [showFixModal, setShowFixModal] = useState(false);
+  // Pure presentation state for the enterprise-styled shell (sidebar collapse, the nav's own
+  // live filter box, the notification bell's dropdown) — none of it round-trips to the server.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [navSearch, setNavSearch] = useState("");
+  const [showNotifications, setShowNotifications] = useState(false);
 
   function loadApplications() {
     return api.get("/runtime-applications").then((res) => setApplications(res.data)).catch(() => setError("Failed to load applications."));
@@ -305,9 +613,11 @@ export default function RuntimeEngine() {
     setRunMessages([]);
     setShowFullXml(false);
     setShowErMap(false);
+    setShowAuditLog(false);
+    setAuditEvents(null);
     setShowDescribePanel(false);
     setGenDescription(""); setGenError(""); setPendingXml(null);
-    setLoggedIn(false); setLoggedInIdentity(null); setMustChangePassword(false);
+    setLoggedIn(false); setLoggedInIdentity(null); setLoggedInRole(null); setMustChangePassword(false);
     setRunMode(false);
     setDetailLoading(true);
     api.get(`/runtime-applications/${id}`)
@@ -353,6 +663,15 @@ export default function RuntimeEngine() {
     });
   }
 
+  // Owner-only read-back of the security/audit log (see auditLog.ts) — logins, registrations,
+  // deletes, restores, and RBAC denials for this application.
+  function loadAuditLog() {
+    setAuditEvents(null);
+    api.get(`/runtime-applications/${selectedId}/audit-log`)
+      .then((res) => setAuditEvents(res.data.events))
+      .catch(() => setAuditEvents([]));
+  }
+
   // Deep-link from the Dashboard's project grid (/runtime-engine?id=123) straight into that
   // application's detail view, same as clicking its card here would.
   useEffect(() => {
@@ -382,7 +701,15 @@ export default function RuntimeEngine() {
     if (!pendingXml || !selectedId) return;
     setApplying(true);
     setGenError("");
-    api.put(`/runtime-applications/${selectedId}`, { xml: pendingXml })
+    // Matches handleGenerate's own choice: an application that already had content got a
+    // targeted FRAGMENT back (see generateApplicationFixXml) and must be merged in with PATCH,
+    // never replaced wholesale with PUT — that full-replace path is only ever correct for the
+    // brand-new, empty-application case this same condition already distinguishes.
+    const isFix = detail && detail.elements.length > 0;
+    const request = isFix
+      ? api.patch(`/runtime-applications/${selectedId}`, { xml: pendingXml })
+      : api.put(`/runtime-applications/${selectedId}`, { xml: pendingXml });
+    request
       .then(() => {
         setGenDescription(""); setPendingXml(null); setShowDescribePanel(false); setShowFixModal(false);
         return api.get(`/runtime-applications/${selectedId}`).then((res) => {
@@ -394,7 +721,7 @@ export default function RuntimeEngine() {
             // Already using the app (fixed something via the in-Run-mode modal below) — refresh
             // the Dashboard's counts and land there, without re-triggering the login gate.
             setActiveElement(null);
-            loadModuleCounts(selectedId, buildAppModules(res.data));
+            loadModuleCounts(selectedId, buildAppModules(res.data, loggedInRole));
           }
         });
       })
@@ -408,7 +735,7 @@ export default function RuntimeEngine() {
     api.post(`/runtime-applications/${selectedId}/auth/logout`)
       .finally(() => {
         setLoggingOut(false);
-        setLoggedIn(false); setLoggedInIdentity(null); setMustChangePassword(false);
+        setLoggedIn(false); setLoggedInIdentity(null); setLoggedInRole(null); setMustChangePassword(false);
         setActiveElement(null);
       });
   }
@@ -434,12 +761,34 @@ export default function RuntimeEngine() {
       .catch(() => setError("Failed to delete this application."));
   }
 
-  function loadGridRows(entityName) {
+  // The list card only carries a summary (elementCounts), not the full XML — reuse the already-
+  // loaded detail when this IS the open application, otherwise fetch it fresh just for the
+  // download, so grabbing an app's XML never requires opening it first.
+  function downloadApplicationXml(app) {
+    if (selectedId === app.id && detail) {
+      downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail));
+      return;
+    }
+    api.get(`/runtime-applications/${app.id}`)
+      .then((res) => downloadTextFile(xmlFilenameFor(res.data.name), buildFullXml(res.data)))
+      .catch(() => setError("Failed to download this application's XML."));
+  }
+
+  function loadGridRows(entityName, includeDeleted) {
     setGridLoading(true);
-    api.get(`/runtime-applications/${selectedId}/entities/${entityName}/rows`)
+    api.get(`/runtime-applications/${selectedId}/entities/${entityName}/rows`, { params: includeDeleted ? { includeDeleted: "true" } : {} })
       .then((res) => setGridRows(res.data.rows))
       .catch(() => { setGridRows([]); setError("Failed to load this entity's rows."); })
       .finally(() => setGridLoading(false));
+  }
+
+  function restoreGridRow(entityName, row, keyField) {
+    const key = row[keyField];
+    setRestoringKey(key);
+    api.post(`/runtime-applications/${selectedId}/entities/${entityName}/rows/${encodeURIComponent(key)}/restore`)
+      .then(() => loadGridRows(entityName, showDeleted))
+      .catch((e) => setError(e.response?.data?.message || e.response?.data?.detail || "Failed to restore this record."))
+      .finally(() => setRestoringKey(null));
   }
 
   // Fetches+caches a DataSource's compiled rows as {value,label} options (see the new backend
@@ -485,6 +834,7 @@ export default function RuntimeEngine() {
     setGridRows(null);
     setGridSearch("");
     setGridSort({ bind: null, dir: "asc" });
+    setShowDeleted(false);
     const parsed = el.tag === "Screen" ? parseScreenForRun(el.xml) : null;
     if (parsed?.grid?.entity) {
       loadGridRows(parsed.grid.entity);
@@ -525,14 +875,23 @@ export default function RuntimeEngine() {
       .then((res) => {
         const resultActions = res.data.actions || [];
         setRunMessages(resultActions);
-        if (action === "save") setSuccessMessage("Saved successfully.");
-        else if (action === "delete") setSuccessMessage("Deleted.");
-        // login/changePassword signal a new session this way (see applicationEngine.ts) — the
-        // cookie itself is already set server-side by the time this response arrives.
+        // Required, not optional polish: a ConcurrencyError/ValidationError still comes back as an
+        // HTTP 200 with an error/conflict-shaped message buried in actions — without this guard, a
+        // save that actually failed would show a green "Saved successfully." banner stacked on top
+        // of the red/amber one explaining why it didn't.
+        const hasProblem = resultActions.some((a) => a.type === "message" && (a.messageType === "error" || a.messageType === "conflict"));
+        if (!hasProblem) {
+          if (action === "save") setSuccessMessage("Saved successfully.");
+          else if (action === "delete") setSuccessMessage("Deleted — restore it from “Show deleted” if needed.");
+        }
+        // login/changePassword/verifyEmail/OAuth signal a new session this way (see
+        // applicationEngine.ts) — the cookie itself is already set server-side by the time this
+        // response arrives.
         const session = resultActions.find((a) => a.type === "session");
         if (session) {
           setLoggedIn(true);
           setLoggedInIdentity(session.identity);
+          setLoggedInRole(session.role ?? null);
           setMustChangePassword(session.mustChangePassword);
           if (session.mustChangePassword) {
             const cpEl = detail?.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
@@ -540,6 +899,13 @@ export default function RuntimeEngine() {
           } else {
             setActiveElement(null); // back to the normal app view
           }
+        } else if (action === "register" && !hasProblem) {
+          // A current-shape (email-based) registration succeeds WITHOUT a session — the account
+          // is unverified until the emailed OTP is confirmed (see applicationEngine.ts's
+          // runRegister). Carry the submitted email straight into VerifyEmail so the user doesn't
+          // have to retype it.
+          const veEl = detail?.elements.find((e) => e.tag === "Screen" && e.name === "VerifyEmail");
+          if (veEl) openElement(veEl, { email: fieldValues.email });
         }
         return resultActions;
       })
@@ -551,14 +917,50 @@ export default function RuntimeEngine() {
       .finally(() => setRunning(false));
   }
 
+  // GitHub's OAuth flow is a real redirect (unlike Google's in-page credential popup) — the
+  // browser leaves this page entirely and comes back with ?code=&state= in the URL. state carries
+  // the applicationId (see handleGithubOAuthClick below) so this only fires for the app that's
+  // actually open, and the ref guards against firing twice (React 18 double-invokes effects in
+  // dev) or replaying the same code again on a later re-render. Defined after runAction, not
+  // before, so the closure always captures the current function rather than a stale reference.
+  const githubCallbackHandledRef = useRef(false);
+  useEffect(() => {
+    if (githubCallbackHandledRef.current || !detail || !activeElement) return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+    if (!code || !state || Number(state) !== selectedId) return;
+    githubCallbackHandledRef.current = true;
+    const redirectUri = `${window.location.origin}${window.location.pathname}?id=${selectedId}`;
+    // Deliberate exception: this effect IS "subscribing to an external system" (the browser just
+    // came back from a real OAuth redirect) and calling setState in response to that external
+    // signal — exactly the documented exception to this rule, not a render-triggered side effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    runAction("githubLogin", { code, redirectUri }).finally(() => {
+      params.delete("code");
+      params.delete("state");
+      const qs = params.toString();
+      window.history.replaceState(null, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+    });
+  }, [detail, activeElement, selectedId]);
+
+  // GitHub has no in-page credential flow like Google's — this sends the browser away to GitHub's
+  // own authorize page; the matching useEffect above picks the user back up on return. state
+  // carries the applicationId so the callback effect only acts on the app that's actually open.
+  function handleGithubOAuthClick() {
+    const redirectUri = `${window.location.origin}${window.location.pathname}?id=${selectedId}`;
+    const url = `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(GITHUB_CLIENT_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent("user:email")}&state=${selectedId}`;
+    window.location.href = url;
+  }
+
   // Deletes straight from the grid row, using the CURRENT (Grid) screen's own entity binding —
   // the "delete" built-in only needs screen.entity, so there's no need to navigate to the form
   // screen first just to remove a record.
   function deleteGridRow(row, keyField) {
-    if (!window.confirm("Delete this record? This can't be undone.")) return;
+    if (!window.confirm("Delete this record? You can restore it later from “Show deleted”.")) return;
     runAction("delete", { [keyField]: row[keyField] }).then(() => {
       const parsed = parseScreenForRun(activeElement.xml);
-      if (parsed?.grid?.entity) loadGridRows(parsed.grid.entity);
+      if (parsed?.grid?.entity) loadGridRows(parsed.grid.entity, showDeleted);
     });
   }
 
@@ -567,6 +969,22 @@ export default function RuntimeEngine() {
   const screenEntityDef = screenForRun?.entity ? detail?.elements.find((e) => e.tag === "Entity" && e.name === screenForRun.entity) : null;
   const screenEntityFields = screenEntityDef ? parseEntityForRun(screenEntityDef.xml).fields : [];
   const screenKeyField = screenEntityFields.find((f) => f.key)?.name || "id";
+
+  // The "Reload latest" action on a conflict banner (see runAction's "conflict" messageType,
+  // emitted when entityStore.ts's ConcurrencyError fires) — re-fetches exactly the one record that
+  // just failed to save and resets the form to it, discarding the user's local edits along with
+  // the stale __version that caused the conflict in the first place. Defined down here, after
+  // screenForRun/screenKeyField, rather than up with the other action functions, so it doesn't
+  // close over them before they're declared.
+  function reloadLatestRow() {
+    if (!activeElement || !screenForRun?.entity) return;
+    const key = runFieldValues[screenKeyField];
+    if (!key) return;
+    api.get(`/runtime-applications/${selectedId}/entities/${screenForRun.entity}/rows/${encodeURIComponent(key)}`)
+      .then((res) => openElement(activeElement, res.data.row))
+      .catch((e) => setError(e.response?.data?.message || e.response?.data?.detail || "Failed to reload this record."));
+  }
+
   const themeEl = detail?.elements.find((e) => e.tag === "Theme");
   const theme = parseThemeForRun(themeEl?.xml);
   const fkColumnMap = screenForRun?.grid ? fkColumnsForGrid(screenForRun.grid.entity, screenForRun.grid.columns) : {};
@@ -575,6 +993,10 @@ export default function RuntimeEngine() {
   // (selectApplication's load, and runAction's login/changePassword result) rather than via an
   // effect watching derived state — see those two functions.
   const needsLoginGate = !!accountEntityEl && !loggedIn;
+  // Whether this app's account entity uses the current (email/OTP/OAuth) convention vs the older
+  // plain username/password one — drives whether the Login/Signup screens show the OAuth buttons
+  // and the "Forgot password?" link at all (an older app renders exactly as it always has).
+  const accountHasEmailIdentity = !!accountEntityEl && parseEntityForRun(accountEntityEl.xml).hasEmailIdentity;
 
   function optionLabel(dsName, value) {
     const opts = optionsCache[dsName];
@@ -639,7 +1061,17 @@ export default function RuntimeEngine() {
           )}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: embedded ? 0 : 10, marginBottom: 4 }}>
             <div style={{ fontWeight: 700, fontSize: "1.3em", color: embedded ? "var(--st-text)" : theme.primary }}>{embedded ? screenForRun.entity : `Browse: ${screenForRun.entity}`}</div>
-            {newRecordEl && <button style={newButtonStyle} onClick={openNewRecordForm}>+ New {screenForRun.entity}</button>}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.82em", color: "#8a8a99", cursor: "pointer", userSelect: "none" }}>
+                <input
+                  type="checkbox"
+                  checked={showDeleted}
+                  onChange={(e) => { setShowDeleted(e.target.checked); loadGridRows(screenForRun.grid.entity, e.target.checked); }}
+                />
+                Show deleted
+              </label>
+              {newRecordEl && <button style={newButtonStyle} onClick={openNewRecordForm}>+ New {screenForRun.entity}</button>}
+            </div>
           </div>
           {gridRows && (
             <div style={{ fontSize: "0.8em", color: "#8a8a99", marginBottom: 12 }}>{visibleGridRows.length} of {gridRows.length} record{gridRows.length === 1 ? "" : "s"}</div>
@@ -691,7 +1123,10 @@ export default function RuntimeEngine() {
                 {visibleGridRows.map((row, i) => (
                   <tr
                     key={i}
-                    style={{ background: i % 2 ? "rgba(0,0,0,0.03)" : "transparent", transition: "background 0.12s" }}
+                    style={{
+                      background: i % 2 ? "rgba(0,0,0,0.03)" : "transparent", transition: "background 0.12s",
+                      opacity: row.__deletedAt ? 0.55 : 1,
+                    }}
                     onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.06)"; }}
                     onMouseLeave={(e) => { e.currentTarget.style.background = i % 2 ? "rgba(0,0,0,0.03)" : "transparent"; }}
                   >
@@ -711,14 +1146,24 @@ export default function RuntimeEngine() {
                       );
                     })}
                     <td style={{ padding: pad, borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
-                      <button
-                        onClick={() => deleteGridRow(row, screenKeyField)}
-                        style={{ background: "none", border: `1px solid ${theme.accent}`, color: theme.accent, borderRadius: `${theme.cornerRadius}px`, fontSize: "0.85em", padding: "3px 10px", cursor: "pointer" }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = theme.accent; e.currentTarget.style.color = "#fff"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = theme.accent; }}
-                      >
-                        Delete
-                      </button>
+                      {row.__deletedAt ? (
+                        <button
+                          onClick={() => restoreGridRow(screenForRun.grid.entity, row, screenKeyField)}
+                          disabled={restoringKey === row[screenKeyField]}
+                          style={{ background: "none", border: "1px solid #16a34a", color: "#16a34a", borderRadius: `${theme.cornerRadius}px`, fontSize: "0.85em", padding: "3px 10px", cursor: "pointer" }}
+                        >
+                          {restoringKey === row[screenKeyField] ? "Restoring…" : "Restore"}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => deleteGridRow(row, screenKeyField)}
+                          style={{ background: "none", border: `1px solid ${theme.accent}`, color: theme.accent, borderRadius: `${theme.cornerRadius}px`, fontSize: "0.85em", padding: "3px 10px", cursor: "pointer" }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = theme.accent; e.currentTarget.style.color = "#fff"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = theme.accent; }}
+                        >
+                          Delete
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -731,11 +1176,11 @@ export default function RuntimeEngine() {
                 <div
                   key={i}
                   style={{
-                    fontSize: 13, padding: m.messageType === "error" ? "8px 12px" : 0,
+                    fontSize: 13, padding: m.messageType === "error" || m.messageType === "conflict" ? "8px 12px" : 0,
                     borderRadius: `${theme.cornerRadius}px`,
-                    background: m.messageType === "error" ? "#fef2f2" : "transparent",
-                    border: m.messageType === "error" ? "1px solid #fecaca" : "none",
-                    color: m.messageType === "error" ? "#dc2626" : "inherit",
+                    background: m.messageType === "error" ? "#fef2f2" : m.messageType === "conflict" ? "#fffbeb" : "transparent",
+                    border: m.messageType === "error" ? "1px solid #fecaca" : m.messageType === "conflict" ? "1px solid #fde68a" : "none",
+                    color: m.messageType === "error" ? "#dc2626" : m.messageType === "conflict" ? "#b45309" : "inherit",
                   }}
                 >
                   {m.value}
@@ -753,16 +1198,30 @@ export default function RuntimeEngine() {
       <div style={{ borderRadius: embedded ? 0 : `${theme.cornerRadius}px`, fontFamily: theme.fontFamily, fontSize: `${theme.fontSize}px`, maxWidth: embedded ? "none" : 480, boxShadow: embedded ? "none" : "0 1px 3px rgba(0,0,0,0.06)", border: embedded ? "none" : "1px solid rgba(0,0,0,0.06)", overflow: "hidden" }}>
         {!embedded && <AppBar theme={theme} appName={detail.name} />}
         <div style={{ background: embedded ? "transparent" : theme.background, padding: embedded ? 0 : 18 }}>
-          {/* No "← Back" while gated — there's nowhere to go back to without logging in
-              (Login), or while a password change is mandatory (ChangePassword). */}
-          {!embedded && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-              {!(needsLoginGate || (activeElement.name === "ChangePassword" && mustChangePassword)) && (
-                <button className="studio-btn-secondary" onClick={() => setActiveElement(null)}>← Back</button>
-              )}
-              <div style={{ fontSize: "0.8em", color: "#8a8a99" }}>{activeElement.name}</div>
-            </div>
-          )}
+          {/* No "← Back" on Login/Signup (the tab switcher below is their navigation) or while a
+              password change is mandatory (ChangePassword) — but VerifyEmail/ForgotPassword/
+              ResetPassword, also reachable pre-login, DO get a way out: back to Login. */}
+          {!embedded && (() => {
+            const onAuthTabScreen = needsLoginGate && (activeElement.name === "Login" || activeElement.name === "Signup");
+            const onPreLoginAuxScreen = needsLoginGate && PRE_LOGIN_AUX_SCREENS.has(activeElement.name);
+            const forcedPasswordChange = activeElement.name === "ChangePassword" && mustChangePassword;
+            return (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                {!onAuthTabScreen && !forcedPasswordChange && (
+                  <button
+                    className="studio-btn-secondary"
+                    onClick={() => {
+                      const loginEl = onPreLoginAuxScreen && detail.elements.find((e) => e.tag === "Screen" && e.name === "Login");
+                      if (loginEl) openElement(loginEl); else setActiveElement(null);
+                    }}
+                  >
+                    ← Back{onPreLoginAuxScreen ? " to Login" : ""}
+                  </button>
+                )}
+                <div style={{ fontSize: "0.8em", color: "#8a8a99" }}>{activeElement.name}</div>
+              </div>
+            );
+          })()}
           {/* The very first account has nowhere to come from except Signup — a real,
               equally-weighted tab switcher (not a small link under Login) so a brand
               new user actually notices there's a way to create an account at all. */}
@@ -848,12 +1307,14 @@ export default function RuntimeEngine() {
             } else if (f.control === "dropdown" && f.optionsFrom) {
               const opts = optionsCache[f.optionsFrom];
               control = (
-                <select style={inputStyle} disabled={f.readonly || opts === "loading"} value={value} onChange={(e) => setValue(e.target.value)} {...focusHandlers}>
-                  <option value="">{opts === "loading" ? "Loading…" : "— Select —"}</option>
-                  {Array.isArray(opts) && opts.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
+                <LookupPicker
+                  value={value}
+                  options={opts}
+                  disabled={f.readonly}
+                  theme={theme}
+                  inputStyle={inputStyle}
+                  onChange={setValue}
+                />
               );
             } else if (fieldDef?.type === "enum" && fieldDef.values.length > 0) {
               control = (
@@ -907,20 +1368,72 @@ export default function RuntimeEngine() {
               </button>
             ))}
           </div>
+          {/* "Forgot password?" only on Login, and only for the current (email-based) account
+              shape — an older, username-based app has no such screen to send them to. */}
+          {activeElement.name === "Login" && accountHasEmailIdentity && (
+            <div style={{ marginTop: 10 }}>
+              <button
+                onClick={() => {
+                  const fpEl = detail.elements.find((e) => e.tag === "Screen" && e.name === "ForgotPassword");
+                  if (fpEl) openElement(fpEl); else setError("No ForgotPassword screen found.");
+                }}
+                style={{ background: "none", border: "none", padding: 0, color: theme.accent, fontSize: "0.85em", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
+              >
+                Forgot password?
+              </button>
+            </div>
+          )}
+          {/* Google/GitHub sign-in — never XML-declared (see aiService.ts's prompt), injected
+              here automatically whenever the account entity supports email identity at all. */}
+          {(activeElement.name === "Login" || activeElement.name === "Signup") && accountHasEmailIdentity && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${theme.accent}22`, display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+              <div style={{ fontSize: "0.8em", color: "#8a8a99" }}>or continue with</div>
+              <GoogleLogin
+                onSuccess={(credentialResponse) => runAction("googleLogin", { credential: credentialResponse.credential })}
+                onError={() => setRunMessages([{ type: "message", messageType: "error", value: "Google sign-in failed." }])}
+                theme="outline"
+                size="medium"
+                text={activeElement.name === "Signup" ? "signup_with" : "signin_with"}
+              />
+              {GITHUB_CLIENT_ID && (
+                <button
+                  onClick={handleGithubOAuthClick}
+                  style={{
+                    width: 232, padding: "8px 0", borderRadius: `${theme.cornerRadius}px`, border: "1px solid #d1d5db",
+                    background: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: "0.9em", fontWeight: 500,
+                  }}
+                >
+                  {activeElement.name === "Signup" ? "Sign up with GitHub" : "Sign in with GitHub"}
+                </button>
+              )}
+            </div>
+          )}
           {runMessages.length > 0 && (
             <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
               {runMessages.map((m, i) => (
                 <div
                   key={i}
                   style={{
-                    fontSize: "0.9em", padding: m.messageType === "error" ? "8px 12px" : 0,
+                    fontSize: "0.9em", padding: m.messageType === "error" || m.messageType === "conflict" ? "8px 12px" : 0,
                     borderRadius: `${theme.cornerRadius}px`,
-                    background: m.messageType === "error" ? "#fef2f2" : "transparent",
-                    border: m.messageType === "error" ? "1px solid #fecaca" : "none",
-                    color: m.messageType === "error" ? "#dc2626" : "inherit",
+                    background: m.messageType === "error" ? "#fef2f2" : m.messageType === "conflict" ? "#fffbeb" : "transparent",
+                    border: m.messageType === "error" ? "1px solid #fecaca" : m.messageType === "conflict" ? "1px solid #fde68a" : "none",
+                    color: m.messageType === "error" ? "#dc2626" : m.messageType === "conflict" ? "#b45309" : "inherit",
+                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
                   }}
                 >
-                  {m.value}
+                  <span>{m.value}</span>
+                  {m.messageType === "conflict" && (
+                    <button
+                      onClick={reloadLatestRow}
+                      style={{
+                        background: "#b45309", color: "#fff", border: "none", borderRadius: `${theme.cornerRadius}px`,
+                        padding: "4px 10px", fontSize: "0.85em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
+                      }}
+                    >
+                      Reload latest
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -935,44 +1448,103 @@ export default function RuntimeEngine() {
   // padded two-column card layout. This is what "look like a real app, desktop, full screen"
   // means: a running application has its own shell, not a schema browser you click into.
   if (runMode && detail) {
-    const modules = buildAppModules(detail);
-    const barButtonStyle = { background: "rgba(255,255,255,0.15)", border: "none", color: "#fff", padding: "6px 12px", borderRadius: 6, cursor: "pointer", fontSize: 12.5, fontWeight: 600, fontFamily: "inherit" };
+    const modules = buildAppModules(detail, loggedInRole);
+    const groupOrder = [...new Set(modules.map((m) => m.group))];
+    const filteredModules = navSearch.trim()
+      ? modules.filter((m) => m.label.toLowerCase().includes(navSearch.trim().toLowerCase()))
+      : modules;
+    const identity = accountEntityEl && loggedIn ? loggedInIdentity : (user?.email || detail.name);
+    const identitySubtitle = accountEntityEl && loggedIn ? "Signed in" : "Workspace owner";
     return (
       <div style={{ position: "fixed", inset: 0, zIndex: 100, background: theme.background, display: "flex", flexDirection: "column", fontFamily: theme.fontFamily }}>
-        <div style={{ background: theme.primary, padding: "10px 20px", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-          <button onClick={() => setRunMode(false)} style={barButtonStyle}>← Exit to Studio</button>
+        <div className="studio-root" style={{ background: "var(--st-surface)", borderBottom: "1px solid var(--st-border)", padding: "10px 20px", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
+          <button onClick={() => setRunMode(false)} className="studio-btn-secondary" style={{ fontSize: 12.5 }}>← Exit</button>
+          <button
+            onClick={() => setSidebarCollapsed((c) => !c)}
+            title={sidebarCollapsed ? "Expand menu" : "Collapse menu"}
+            style={{ background: "transparent", border: "1px solid var(--st-border)", borderRadius: 7, width: 30, height: 30, cursor: "pointer", color: "var(--st-text)", fontSize: 13, flexShrink: 0 }}
+          >
+            ☰
+          </button>
           {theme.logo ? (
-            <img src={theme.logo} alt="" style={{ height: 24, display: "block" }} onError={(e) => { e.target.style.display = "none"; }} />
+            <img src={theme.logo} alt="" style={{ height: 26, display: "block", flexShrink: 0 }} onError={(e) => { e.target.style.display = "none"; }} />
           ) : (
-            <div style={{ width: 24, height: 24, borderRadius: "50%", background: "rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 700, fontSize: 12 }}>
+            <div style={{ width: 30, height: 30, borderRadius: 8, background: theme.primary, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
               {(detail.name || "?").charAt(0).toUpperCase()}
             </div>
           )}
-          <div style={{ color: "#fff", fontWeight: 700, fontSize: "1.05em", flex: 1 }}>{detail.name}</div>
-          {accountEntityEl && loggedIn && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#fff", fontSize: 12.5 }}>
-              <span>Signed in as <strong>{loggedInIdentity}</strong></span>
-              <button
-                style={barButtonStyle}
-                onClick={() => {
-                  const cp = detail.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
-                  if (cp) openElement(cp); else setError("No ChangePassword screen found.");
-                }}
+          <div style={{ fontWeight: 700, fontSize: "1.02em", color: "var(--st-text)", whiteSpace: "nowrap" }}>{detail.name}</div>
+          <div style={{ flex: 1, maxWidth: 420, marginLeft: 16, position: "relative" }}>
+            <span style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", fontSize: 12.5, color: "var(--st-muted)", pointerEvents: "none" }}>🔍</span>
+            <input
+              value={navSearch}
+              onChange={(e) => setNavSearch(e.target.value)}
+              placeholder="Search modules…"
+              className="studio-input"
+              style={{ width: "100%", paddingLeft: 30, fontSize: 13 }}
+            />
+          </div>
+          <div style={{ flex: 1 }} />
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setShowNotifications((v) => !v)}
+              title="Notifications"
+              style={{ background: "transparent", border: "1px solid var(--st-border)", borderRadius: 8, width: 34, height: 34, cursor: "pointer", color: "var(--st-text)", fontSize: 14, flexShrink: 0 }}
+            >
+              🔔
+            </button>
+            {showNotifications && (
+              <div
+                className="studio-card"
+                style={{ position: "absolute", right: 0, top: 40, width: 220, padding: 14, fontSize: 12.5, color: "var(--st-muted)", zIndex: 10 }}
+                onMouseLeave={() => setShowNotifications(false)}
               >
-                Change Password
-              </button>
-              <button style={barButtonStyle} onClick={handleLogout} disabled={loggingOut}>{loggingOut ? "Logging out…" : "Logout"}</button>
+                You're all caught up — no new notifications.
+              </div>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 9, paddingLeft: 12, borderLeft: "1px solid var(--st-border)" }}>
+            <div style={{ width: 32, height: 32, borderRadius: "50%", background: theme.primary, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12.5, flexShrink: 0 }}>
+              {initialsFor(identity)}
             </div>
-          )}
+            <div style={{ lineHeight: 1.25 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--st-text)" }}>{identity}</div>
+              {accountEntityEl && loggedIn ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => {
+                      const cp = detail.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
+                      if (cp) openElement(cp); else setError("No ChangePassword screen found.");
+                    }}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: "var(--st-accent)" }}
+                  >
+                    Change password
+                  </button>
+                  <button onClick={handleLogout} disabled={loggingOut} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: "var(--st-danger)" }}>
+                    {loggingOut ? "Logging out…" : "Logout"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: "var(--st-muted)" }}>{identitySubtitle}</div>
+              )}
+            </div>
+          </div>
         </div>
         {showFixModal && (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }} onClick={() => setShowFixModal(false)}>
+          // className="studio-root" here is load-bearing, not decorative: every --st-* color
+          // variable the studio-card/studio-btn-*/studio-textarea classes below depend on is only
+          // ever DEFINED on an element with this class (see styles.css) — Run mode's own root never
+          // carries it (its content renders the APP's own theme, not the Studio's), so without this
+          // wrapper the modal's background/border/button colors all silently fail to resolve,
+          // which is exactly why it read as "not clearly visible."
+          <div className="studio-root" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }} onClick={() => setShowFixModal(false)}>
             <div className="studio-card" style={{ width: 560, padding: 24, maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
-              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>Fix or update this application</div>
+              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4, color: "var(--st-text)" }}>Fix or update this application</div>
               <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 16 }}>
                 Describe what's wrong or what should change — a screen behaving oddly, a validation
-                that's too strict, a field that should be there and isn't. The application is
-                reworked in place, keeping everything else exactly as it is.
+                that's too strict, a field that should be there and isn't. Only the specific thing
+                you describe gets touched — every other screen, entity, and all your existing data
+                stay exactly as they are.
               </p>
               <textarea
                 className="studio-textarea"
@@ -1008,40 +1580,105 @@ export default function RuntimeEngine() {
         )}
         <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
           {!needsLoginGate && (
-            <div style={{ width: 220, borderRight: "1px solid var(--st-border)", padding: 14, overflowY: "auto", background: "var(--st-surface)", flexShrink: 0 }}>
-              <div
-                onClick={() => setActiveElement(null)}
-                style={{
-                  padding: "9px 12px", borderRadius: 6, cursor: "pointer", marginBottom: 10, fontSize: 13.5,
-                  fontWeight: !activeElement ? 700 : 500, background: !activeElement ? `${theme.primary}1a` : "transparent", color: !activeElement ? theme.primary : "var(--st-text)",
-                  borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
-                }}
-              >
-                🏠 Dashboard
+            // Same --st-* scoping reason as the Fix modal/Dashboard above. Grouped like a real
+            // enterprise app's nav (People/Time/Finance/…, see groupForEntity) rather than one flat
+            // list, with a collapse toggle and a live filter fed by the top bar's search box.
+            <div className="studio-root" style={{ width: sidebarCollapsed ? 64 : 220, borderRight: "1px solid var(--st-border)", padding: sidebarCollapsed ? "14px 8px" : 14, overflowY: "auto", background: "var(--st-surface)", flexShrink: 0, display: "flex", flexDirection: "column", transition: "width 0.15s" }}>
+              <div style={{ flex: 1 }}>
+                <div
+                  onClick={() => setActiveElement(null)}
+                  title="Dashboard"
+                  style={{
+                    padding: sidebarCollapsed ? "9px 0" : "9px 12px", borderRadius: 6, cursor: "pointer", marginBottom: 10, fontSize: 13.5,
+                    fontWeight: !activeElement ? 700 : 500, background: !activeElement ? `${theme.primary}1a` : "transparent", color: !activeElement ? theme.primary : "var(--st-text)",
+                    borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
+                    display: "flex", alignItems: "center", gap: 8, justifyContent: sidebarCollapsed ? "center" : "flex-start",
+                  }}
+                >
+                  <span>🏠</span>
+                  {!sidebarCollapsed && "Dashboard"}
+                </div>
+                {groupOrder.map((group) => {
+                  const items = filteredModules.filter((m) => m.group === group);
+                  if (items.length === 0) return null;
+                  return (
+                    <div key={group} style={{ marginTop: 14 }}>
+                      {!sidebarCollapsed && (
+                        <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--st-muted)", textTransform: "uppercase", padding: "0 12px", marginBottom: 6 }}>
+                          {group}
+                        </div>
+                      )}
+                      {items.map((m) => {
+                        const active = screenForRun?.entity === m.key;
+                        return (
+                          <div
+                            key={m.key}
+                            onClick={() => openElement(m.screenEl)}
+                            title={m.label}
+                            style={{
+                              padding: sidebarCollapsed ? "9px 0" : "9px 12px", borderRadius: 6, cursor: "pointer", marginBottom: 2, fontSize: 13.5,
+                              fontWeight: active ? 700 : 500, background: active ? `${theme.primary}1a` : "transparent", color: active ? theme.primary : "var(--st-text)",
+                              display: "flex", alignItems: "center", gap: 8, justifyContent: sidebarCollapsed ? "center" : "flex-start",
+                            }}
+                          >
+                            <ModuleIcon entity={m.key} icon={m.icon} style={{ color: active ? theme.primary : "var(--st-muted)", flexShrink: 0 }} />
+                            {!sidebarCollapsed && m.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+                {navSearch.trim() && filteredModules.length === 0 && !sidebarCollapsed && (
+                  <div style={{ fontSize: 12, color: "var(--st-muted)", padding: "10px 12px" }}>No modules match "{navSearch}".</div>
+                )}
               </div>
-              {modules.map((m) => {
-                const active = screenForRun?.entity === m.key;
-                return (
-                  <div
-                    key={m.key}
-                    onClick={() => openElement(m.screenEl)}
-                    style={{
-                      padding: "9px 12px", borderRadius: 6, cursor: "pointer", marginBottom: 2, fontSize: 13.5,
-                      fontWeight: active ? 700 : 500, background: active ? `${theme.primary}1a` : "transparent", color: active ? theme.primary : "var(--st-text)",
-                      display: "flex", alignItems: "center", gap: 8,
-                    }}
-                  >
-                    <span>{iconForEntity(m.key)}</span>
-                    {m.label}
-                  </div>
-                );
-              })}
+              <div style={{ borderTop: "1px solid var(--st-border)", paddingTop: 10, fontSize: 11, color: "var(--st-muted)", display: "flex", alignItems: "center", gap: 6, justifyContent: sidebarCollapsed ? "center" : "flex-start" }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
+                {!sidebarCollapsed && "All Systems Normal"}
+              </div>
             </div>
           )}
           <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
             {!activeElement && !needsLoginGate && (
-              <div>
-                <div style={{ fontWeight: 700, fontSize: "1.3em", color: "var(--st-text)", marginBottom: 18 }}>{detail.name}</div>
+              // Same reason as the Fix modal above: studio-card and the --st-text/--st-muted
+              // variables used directly below only resolve inside a .studio-root-classed subtree.
+              <div className="studio-root">
+                <div
+                  style={{
+                    background: `linear-gradient(135deg, ${theme.primary} 0%, ${theme.accent} 100%)`,
+                    borderRadius: 14, padding: "26px 28px", marginBottom: 22, color: "#fff",
+                    boxShadow: `0 8px 24px ${theme.primary}33`,
+                  }}
+                >
+                  <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
+                    {new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+                  </div>
+                  <div style={{ fontSize: "1.5em", fontWeight: 800, marginBottom: 6 }}>
+                    {greetingForHour(new Date().getHours())}, {displayNameFor(accountEntityEl && loggedIn ? loggedInIdentity : user?.email)} 👋
+                  </div>
+                  <div style={{ fontSize: 13, opacity: 0.9, marginBottom: modules.some((m) => m.formScreenEl) ? 18 : 0, maxWidth: 560 }}>
+                    Here's what's happening across {detail.name} today.
+                  </div>
+                  {modules.some((m) => m.formScreenEl) && (
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      {modules.filter((m) => m.formScreenEl).slice(0, 3).map((m) => (
+                        <button
+                          key={m.key}
+                          onClick={() => openElement(m.formScreenEl)}
+                          style={{
+                            background: "rgba(255,255,255,0.18)", border: "1px solid rgba(255,255,255,0.35)", color: "#fff",
+                            borderRadius: 999, padding: "8px 16px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                            display: "flex", alignItems: "center", gap: 6,
+                          }}
+                        >
+                          <ModuleIcon entity={m.key} icon={m.icon} size={15} style={{ color: "#fff", flexShrink: 0 }} /> New {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontWeight: 700, fontSize: "1.05em", color: "var(--st-text)", marginBottom: 14 }}>Modules</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 16 }}>
                   {modules.map((m) => {
                     const count = moduleCounts[m.key];
@@ -1054,13 +1691,16 @@ export default function RuntimeEngine() {
                         onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 4px 14px rgba(0,0,0,0.12)"; }}
                         onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
                       >
-                        <div style={{ width: 40, height: 40, borderRadius: 8, background: `${theme.primary}22`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 19, marginBottom: 12 }}>
-                          {iconForEntity(m.key)}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--st-muted)", textTransform: "uppercase" }}>{m.label}</div>
+                          <div style={{ width: 32, height: 32, borderRadius: 8, background: `${theme.primary}1f`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <ModuleIcon entity={m.key} icon={m.icon} style={{ color: theme.primary }} />
+                          </div>
                         </div>
-                        <div style={{ fontSize: "1.6em", fontWeight: 700, color: "var(--st-text)" }}>
+                        <div style={{ fontSize: "1.8em", fontWeight: 800, color: "var(--st-text)", marginTop: 10 }}>
                           {count === "loading" ? "…" : count === null ? "—" : count}
                         </div>
-                        <div style={{ fontSize: 13, color: "#8a8a99", marginTop: 2 }}>{m.label}</div>
+                        <div style={{ fontSize: 12, color: "var(--st-muted)", marginTop: 2 }}>records</div>
                       </div>
                     );
                   })}
@@ -1150,13 +1790,22 @@ export default function RuntimeEngine() {
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{a.name}</div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); deleteApplication(a.id); }}
-                  title="Delete"
-                  style={{ background: "none", border: "none", cursor: "pointer", color: "var(--st-danger)", opacity: 0.7, padding: 0, fontSize: 13 }}
-                >
-                  ✕
-                </button>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); downloadApplicationXml(a); }}
+                    title="Download XML"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--st-muted)", opacity: 0.8, padding: 0, fontSize: 13, display: "flex" }}
+                  >
+                    <Download size={14} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); deleteApplication(a.id); }}
+                    title="Delete"
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--st-danger)", opacity: 0.7, padding: 0, fontSize: 13 }}
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
               <div style={{ fontSize: 11.5, color: "var(--st-muted)", marginTop: 4 }}>
                 {Object.entries(a.elementCounts || {}).map(([tag, count]) => `${tag}: ${count}`).join(" · ") || "No elements"}
@@ -1207,23 +1856,33 @@ export default function RuntimeEngine() {
                     🗺️ ER Map
                   </div>
                   <div
-                    onClick={() => { setShowFullXml(true); setShowErMap(false); setShowDescribePanel(false); setActiveElement(null); }}
+                    onClick={() => { setShowFullXml(true); setShowErMap(false); setShowAuditLog(false); setShowDescribePanel(false); setActiveElement(null); }}
                     style={{
-                      padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 10,
+                      padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 2,
                       fontWeight: 600, background: showFullXml ? "var(--st-accent)" : "transparent",
-                      color: showFullXml ? "#fff" : "inherit", borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
+                      color: showFullXml ? "#fff" : "inherit",
                     }}
                   >
                     📄 Full XML
                   </div>
+                  <div
+                    onClick={() => { setShowAuditLog(true); setShowFullXml(false); setShowErMap(false); setShowDescribePanel(false); setActiveElement(null); loadAuditLog(); }}
+                    style={{
+                      padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 10,
+                      fontWeight: 600, background: showAuditLog ? "var(--st-accent)" : "transparent",
+                      color: showAuditLog ? "#fff" : "inherit", borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
+                    }}
+                  >
+                    🛡️ Audit Log
+                  </div>
                   {ELEMENT_TAGS.map((tag) => (
                     <div
                       key={tag}
-                      onClick={() => { setActiveTag(tag); setActiveElement(null); setShowFullXml(false); setShowErMap(false); setShowDescribePanel(false); }}
+                      onClick={() => { setActiveTag(tag); setActiveElement(null); setShowFullXml(false); setShowErMap(false); setShowAuditLog(false); setShowDescribePanel(false); }}
                       style={{
                         padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 2,
-                        background: !showFullXml && !showErMap && !showDescribePanel && activeTag === tag ? "var(--st-accent)" : "transparent",
-                        color: !showFullXml && !showErMap && !showDescribePanel && activeTag === tag ? "#fff" : "inherit",
+                        background: !showFullXml && !showErMap && !showAuditLog && !showDescribePanel && activeTag === tag ? "var(--st-accent)" : "transparent",
+                        color: !showFullXml && !showErMap && !showAuditLog && !showDescribePanel && activeTag === tag ? "#fff" : "inherit",
                       }}
                     >
                       {tag} ({detail.elements.filter((e) => e.tag === tag).length})
@@ -1257,7 +1916,7 @@ export default function RuntimeEngine() {
                     <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 12, maxWidth: 560 }}>
                       {detail.elements.length === 0
                         ? "Describe it in plain English — one entity, or the whole thing, screens now or later."
-                        : "Describe what to add or change — the application is reworked in place, keeping everything else."}
+                        : "Describe what to add or change — only that gets touched, everything else and all existing data stay exactly as they are."}
                     </p>
                     <textarea
                       className="studio-textarea"
@@ -1291,34 +1950,76 @@ export default function RuntimeEngine() {
                 )}
                 {showErMap && !needsLoginGate && (() => {
                   const erTables = applicationToErTables(detail);
+                  // Every non-Entity node that's connected to an Entity (same FOR_ENTITY edges the
+                  // graph already carries — see applicationStore.ts's linkElements) — shown as its
+                  // own table so these connections are visible from inside the Studio, not just by
+                  // opening Neo4j Browser directly.
+                  const validationRows = detail.elements
+                    .filter((e) => e.tag === "Validation")
+                    .map((e) => { const v = parseValidationForRun(e.xml); return [v.entity, v.id, v.when, v.onViolation, v.test || "—", v.message || "—"]; });
+                  const screenRows = detail.elements
+                    .filter((e) => e.tag === "Screen")
+                    .map((e) => { const s = parseScreenForRun(e.xml); return [s.entity || "—", e.name, s.grid ? "grid" : "form", s.requiresRole ? s.requiresRole.join(", ") : "—"]; });
+                  const actionRows = detail.elements
+                    .filter((e) => e.tag === "Action")
+                    .map((e) => { const a = parseActionForRun(e.xml); return [a.entity, e.name, a.steps.join(" → ") || "—"]; });
+                  const dataSourceRows = detail.elements
+                    .filter((e) => e.tag === "DataSource")
+                    .map((e) => { const d = parseDataSourceForRun(e.xml); return [d.entity || "—", e.name]; });
                   return (
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Entity/Relationship Map</div>
                       <ERDiagram entities={erTables} emptyMessage="No entities yet — describe the application first." />
                       {erTables.tables.length > 0 && (
-                        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 16, fontSize: 12.5 }}>
-                          <thead>
-                            <tr style={{ background: "rgba(0,0,0,0.05)" }}>
-                              {["Entity", "Field", "Type", "Key", "Required", "Related To"].map((h) => (
-                                <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontWeight: 600 }}>{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {erTables.tables.flatMap((t) =>
-                              t.columns.map((c, i) => (
-                                <tr key={`${t.name}.${c.name}`} style={{ borderBottom: "1px solid var(--st-border)" }}>
-                                  <td style={{ padding: "6px 10px" }}>{i === 0 ? t.name : ""}</td>
-                                  <td style={{ padding: "6px 10px" }}>{c.name}</td>
-                                  <td style={{ padding: "6px 10px" }}>{c.type}</td>
-                                  <td style={{ padding: "6px 10px" }}>{c.pk ? "✓" : ""}</td>
-                                  <td style={{ padding: "6px 10px" }}>{detail.elements.find((e) => e.tag === "Entity" && e.name === t.name) && parseEntityForRun(detail.elements.find((e) => e.tag === "Entity" && e.name === t.name).xml).fields.find((f) => f.name === c.name)?.required ? "✓" : ""}</td>
-                                  <td style={{ padding: "6px 10px" }}>{c.fk || ""}</td>
-                                </tr>
-                              ))
-                            )}
-                          </tbody>
-                        </table>
+                        <>
+                          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 16, fontSize: 12.5 }}>
+                            <thead>
+                              <tr style={{ background: "rgba(0,0,0,0.05)" }}>
+                                {["Entity", "Field", "Type", "Key", "Required", "Related To"].map((h) => (
+                                  <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontWeight: 600 }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {erTables.tables.flatMap((t) =>
+                                t.columns.map((c, i) => (
+                                  <tr key={`${t.name}.${c.name}`} style={{ borderBottom: "1px solid var(--st-border)" }}>
+                                    <td style={{ padding: "6px 10px" }}>{i === 0 ? t.name : ""}</td>
+                                    <td style={{ padding: "6px 10px" }}>{c.name}</td>
+                                    <td style={{ padding: "6px 10px" }}>{c.type}</td>
+                                    <td style={{ padding: "6px 10px" }}>{c.pk ? "✓" : ""}</td>
+                                    <td style={{ padding: "6px 10px" }}>{detail.elements.find((e) => e.tag === "Entity" && e.name === t.name) && parseEntityForRun(detail.elements.find((e) => e.tag === "Entity" && e.name === t.name).xml).fields.find((f) => f.name === c.name)?.required ? "✓" : ""}</td>
+                                    <td style={{ padding: "6px 10px" }}>{c.fk || ""}</td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                          <ElementTable
+                            title="Validations"
+                            columns={["Entity", "Rule", "When", "On Violation", "Condition", "Message"]}
+                            rows={validationRows}
+                            emptyLabel="No validations yet — every entity can have one or more, each connected to it."
+                          />
+                          <ElementTable
+                            title="Screens"
+                            columns={["Entity", "Screen", "Type", "Requires Role"]}
+                            rows={screenRows}
+                            emptyLabel="No screens yet."
+                          />
+                          <ElementTable
+                            title="Actions"
+                            columns={["Entity", "Action", "Steps"]}
+                            rows={actionRows}
+                            emptyLabel="No custom actions yet — save/delete/cancel/openRecord are built in and don't need one."
+                          />
+                          <ElementTable
+                            title="Data Sources"
+                            columns={["Entity", "Data Source"]}
+                            rows={dataSourceRows}
+                            emptyLabel="No data sources yet — these power dropdown options and FK lookups."
+                          />
+                        </>
                       )}
                     </div>
                   );
@@ -1327,19 +2028,59 @@ export default function RuntimeEngine() {
                   <div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                       <div style={{ fontWeight: 700, fontSize: 14 }}>Full Application XML</div>
-                      <button
-                        className="studio-btn-secondary"
-                        onClick={() => navigator.clipboard?.writeText(buildFullXml(detail))}
-                      >
-                        Copy
-                      </button>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          className="studio-btn-secondary"
+                          onClick={() => downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail))}
+                        >
+                          Download
+                        </button>
+                        <button
+                          className="studio-btn-secondary"
+                          onClick={() => navigator.clipboard?.writeText(buildFullXml(detail))}
+                        >
+                          Copy
+                        </button>
+                      </div>
                     </div>
                     <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12, maxHeight: "70vh" }}>
                       {buildFullXml(detail)}
                     </pre>
                   </div>
                 )}
-                {!showFullXml && !showErMap && !showDescribePanel && !activeElement && (
+                {showAuditLog && (
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Audit Log</div>
+                    <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 14 }}>
+                      Logins, registrations, deletes, restores, and access denials for this application — most recent first.
+                    </p>
+                    {auditEvents === null && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Loading…</div>}
+                    {auditEvents?.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No events yet.</div>}
+                    {auditEvents && auditEvents.length > 0 && (
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--st-border)" }}>
+                            <th style={{ textAlign: "left", padding: "6px 10px" }}>When</th>
+                            <th style={{ textAlign: "left", padding: "6px 10px" }}>Event</th>
+                            <th style={{ textAlign: "left", padding: "6px 10px" }}>Who</th>
+                            <th style={{ textAlign: "left", padding: "6px 10px" }}>Detail</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {auditEvents.map((e, i) => (
+                            <tr key={i} style={{ borderBottom: "1px solid var(--st-border)" }}>
+                              <td style={{ padding: "6px 10px", whiteSpace: "nowrap", color: "var(--st-muted)" }}>{new Date(e.at).toLocaleString()}</td>
+                              <td style={{ padding: "6px 10px" }}>{e.type}</td>
+                              <td style={{ padding: "6px 10px" }}>{e.identity || "—"}</td>
+                              <td style={{ padding: "6px 10px" }}>{e.detail || "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+                {!showFullXml && !showErMap && !showAuditLog && !showDescribePanel && !activeElement && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {elementsByTag.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No {activeTag} elements.</div>}
                     {elementsByTag.map((el) => (
