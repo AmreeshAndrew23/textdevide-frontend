@@ -16,10 +16,13 @@ import {
   ShoppingCart, Receipt, CreditCard, Shield, Wrench, ClipboardCheck, FileText,
   GraduationCap, BookOpen, HeartPulse, Stethoscope, Lock, NotebookPen, Car, Package, Briefcase,
   Search, ChevronDown, X as XIcon, Download,
-  Sparkles, MessageSquareText, Network, FileCode2, ShieldCheck, LayoutDashboard, Play, ArrowLeft, Menu, Bell,
+  Sparkles, MessageSquareText, Network, FileCode2, ShieldCheck, LayoutDashboard, Play, ArrowLeft, Bell,
   Copy, Boxes, Monitor, GitBranch, ListChecks, Database, Zap, Palette, KeyRound, Hash, ChevronRight, Check,
-  RotateCcw, Inbox,
+  RotateCcw, Plus, Pencil, Trash2, CheckCircle2, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronUp,
+  ArrowUpDown, Upload, Image as ImageIcon, LogOut, CalendarDays, ArrowUpRight, BarChart3, PanelLeftOpen, PanelLeftClose,
 } from "lucide-react";
+import { pluralize, toneForValue, formatDate, formatNumber, displayText, avatarColors, toCsv } from "../utils/runtimeFormat";
+import "../runtimeApp.css";
 
 // The second, independent "Runtime Engine" — its own standalone space, NOT nested under any
 // project (confirmed with the user: "we need to have a separate space for both"). Lists/creates
@@ -226,7 +229,7 @@ function describeElement(el) {
 // app (driven purely by the optionsFrom/DataSource data every app already has — no per-app XML
 // change needed). Replaces a plain <select>, which is fine for a handful of rows but unusable
 // once the related entity (Employee, Vendor, ...) has hundreds — type to filter, click to pick.
-function LookupPicker({ value, options, disabled, theme, placeholder, onChange, inputStyle }) {
+function LookupPicker({ value, options, disabled, placeholder, onChange }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const rootRef = useRef(null);
@@ -250,61 +253,43 @@ function LookupPicker({ value, options, disabled, theme, placeholder, onChange, 
     <div ref={rootRef} style={{ position: "relative" }}>
       <button
         type="button"
+        className="rt-input"
         disabled={disabled || loading}
         onClick={() => { setOpen((v) => !v); setQuery(""); }}
-        style={{
-          ...inputStyle, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-          cursor: disabled || loading ? "default" : "pointer", textAlign: "left", font: "inherit",
-          color: selected ? inputStyle.color : "#9ca3af",
-        }}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, cursor: disabled || loading ? "default" : "pointer", textAlign: "left", color: selected ? undefined : "#94a3b8" }}
       >
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {loading ? "Loading…" : selected ? selected.label : (placeholder || "— Select —")}
+          {loading ? "Loading…" : selected ? selected.label : (placeholder || "Select…")}
         </span>
-        {!disabled && !loading && <ChevronDown size={15} style={{ flexShrink: 0, color: "#9ca3af" }} />}
+        {!disabled && !loading && <ChevronDown size={15} style={{ flexShrink: 0, color: "#94a3b8" }} />}
       </button>
       {open && !disabled && !loading && (
-        <div
-          style={{
-            position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
-            background: "#fff", border: `1px solid ${theme.accent}55`, borderRadius: `${theme.cornerRadius}px`,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderBottom: "1px solid #e5e7eb" }}>
-            <Search size={14} style={{ color: "#9ca3af", flexShrink: 0 }} />
+        <div className="rt-lookup-menu">
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid var(--rt-border)" }}>
+            <Search size={14} style={{ color: "#94a3b8", flexShrink: 0 }} />
             <input
               autoFocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Type to search…"
-              style={{ flex: 1, border: "none", outline: "none", font: "inherit", fontSize: "0.9em" }}
+              style={{ flex: 1, border: "none", outline: "none", font: "inherit", fontSize: 13.5, background: "transparent", boxShadow: "none" }}
             />
             {value !== "" && value != null && (
-              <button
-                type="button"
-                onClick={() => { onChange(""); setOpen(false); }}
-                title="Clear"
-                style={{ border: "none", background: "none", cursor: "pointer", color: "#9ca3af", display: "flex" }}
-              >
+              <button type="button" onClick={() => { onChange(""); setOpen(false); }} title="Clear" className="rt-icon-btn sm" style={{ width: 24, height: 24 }}>
                 <XIcon size={14} />
               </button>
             )}
           </div>
-          <div style={{ maxHeight: 220, overflowY: "auto" }}>
+          <div style={{ maxHeight: 240, overflowY: "auto", padding: 4 }}>
             {filtered.length === 0 ? (
-              <div style={{ padding: "10px 12px", fontSize: "0.85em", color: "#9ca3af" }}>No matches.</div>
+              <div style={{ padding: "10px 12px", fontSize: 13, color: "#94a3b8" }}>No matches.</div>
             ) : (
               filtered.map((o) => (
                 <div
                   key={o.value}
+                  className={`rt-lookup-opt${String(o.value) === String(value) ? " selected" : ""}`}
+                  style={{ borderRadius: 7 }}
                   onClick={() => { onChange(o.value); setOpen(false); }}
-                  style={{
-                    padding: "7px 12px", fontSize: "0.9em", cursor: "pointer",
-                    background: String(o.value) === String(value) ? `${theme.accent}14` : "transparent",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = `${theme.accent}22`; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = String(o.value) === String(value) ? `${theme.accent}14` : "transparent"; }}
                 >
                   {o.label}
                 </div>
@@ -364,16 +349,32 @@ function buildAppModules(detail, role = null) {
 // other primary-colored surface in the Run panel.
 function AppBar({ theme, appName }) {
   return (
-    <div style={{ background: theme.primary, padding: "10px 18px", display: "flex", alignItems: "center", gap: 10 }}>
-      {theme.logo ? (
-        <img src={theme.logo} alt="" style={{ height: 24, display: "block" }} onError={(e) => { e.target.style.display = "none"; }} />
-      ) : (
-        <div style={{ width: 24, height: 24, borderRadius: "50%", background: "rgba(255,255,255,0.25)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 700, fontSize: 12 }}>
-          {(appName || "?").charAt(0).toUpperCase()}
-        </div>
-      )}
-      <div style={{ color: "#fff", fontWeight: 700, fontSize: "1.05em", fontFamily: theme.fontFamily }}>{appName}</div>
+    <div className="rt-topbar" style={{ height: 56, padding: "0 20px", gap: 11 }}>
+      {theme.logo
+        ? <img src={theme.logo} alt="" style={{ height: 26, display: "block" }} onError={(e) => { e.target.style.display = "none"; }} />
+        : <div className="rt-logo" style={{ width: 30, height: 30, fontSize: 13 }}>{(appName || "?").charAt(0).toUpperCase()}</div>}
+      <div style={{ fontWeight: 700, fontSize: 14.5 }}>{appName}</div>
+      <span className="rt-badge plain neutral" style={{ marginLeft: 6 }}>Screen preview</span>
     </div>
+  );
+}
+
+// A generated app's surfaces must be light (its text colors assume so) — a Theme that asks for a
+// dark background still gets readable white surfaces rather than dark-on-dark text.
+function surfaceColorFor(background) {
+  const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(String(background || "").trim());
+  if (!m) return "#ffffff";
+  const hex = m[1].length === 3 ? m[1].split("").map((c) => c + c).join("") : m[1];
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 200 ? `#${hex}` : "#ffffff";
+}
+
+// GitHub's mark (lucide no longer ships brand icons).
+function GithubMark({ size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 .5C5.65.5.5 5.65.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.87-1.37-3.87-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
+    </svg>
   );
 }
 
@@ -417,6 +418,9 @@ export default function RuntimeEngine() {
   const [gridLoading, setGridLoading] = useState(false);
   const [gridSearch, setGridSearch] = useState("");
   const [gridSort, setGridSort] = useState({ bind: null, dir: "asc" });
+  const [gridPage, setGridPage] = useState(1);
+  const [gridPageSize, setGridPageSize] = useState(10);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   const [optionsCache, setOptionsCache] = useState({}); // dsName -> "loading" | [{value,label}]
   const [successMessage, setSuccessMessage] = useState("");
   const [uploadingFields, setUploadingFields] = useState({}); // field bind -> true while its picture is uploading
@@ -636,7 +640,8 @@ export default function RuntimeEngine() {
       .finally(() => {
         setLoggingOut(false);
         setLoggedIn(false); setLoggedInIdentity(null); setLoggedInRole(null); setMustChangePassword(false);
-        setActiveElement(null);
+        const loginEl = detail?.elements.find((e) => e.tag === "Screen" && e.name === "Login");
+        if (runMode && loginEl) openElement(loginEl); else setActiveElement(null);
       });
   }
 
@@ -721,6 +726,8 @@ export default function RuntimeEngine() {
     setGridRows(null);
     setGridSearch("");
     setGridSort({ bind: null, dir: "asc" });
+    setGridPage(1);
+    setShowUserMenu(false);
     setShowDeleted(false);
     const parsed = el.tag === "Screen" ? parseScreenForRun(el.xml) : null;
     if (parsed?.grid?.entity) {
@@ -919,410 +926,598 @@ export default function RuntimeEngine() {
     setGridSort((s) => (s.bind === bind ? { bind, dir: s.dir === "asc" ? "desc" : "asc" } : { bind, dir: "asc" }));
   }
 
-  // Renders whatever Screen is currently open — shared between the Studio's own per-tag element
-  // browser AND the full-screen Run mode below, so there's exactly one implementation of "what a
-  // Grid/Form screen looks like." embedded=true (Run mode) suppresses the per-screen AppBar/Back
-  // row, since Run mode already has its own persistent top bar and left nav doing that job.
+  // ===== Generated-app UI (Run mode) =====
+  // Everything below renders the app an END USER of the generated application sees — a light,
+  // professional business UI branded by the app's own <Theme> (see runtimeApp.css), not the
+  // Studio's dark chrome. The Theme's values become CSS variables on the .rt-app root; every
+  // screen reads them through classes, so one Theme change restyles the whole app.
+  const rtVars = {
+    "--rt-primary": theme.primary,
+    "--rt-accent": theme.accent,
+    "--rt-bg": surfaceColorFor(theme.background),
+    "--rt-radius": `${Math.max(4, Math.min(Number(theme.cornerRadius) || 8, 14))}px`,
+    "--rt-font": theme.fontFamily,
+    "--rt-font-size": `${theme.fontSize || 14}px`,
+  };
+  const rtClass = `rt-app${theme.density === "compact" ? " rt-compact" : ""}`;
+  const screenEntityIcon = screenEntityDef ? parseEntityForRun(screenEntityDef.xml).icon : null;
+  const gridScreenForEntity = (entityName) =>
+    detail?.elements.find((e) => e.tag === "Screen" && !AUTH_SCREEN_NAMES.has(e.name) && parseScreenForRun(e.xml).grid?.entity === entityName) || null;
+
+  function renderRunMessages() {
+    if (runMessages.length === 0) return null;
+    return (
+      <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+        {runMessages.map((m, i) => {
+          const kind = m.messageType === "error" ? "error" : m.messageType === "conflict" ? "warning" : "info";
+          const Icon = kind === "error" ? AlertCircle : kind === "warning" ? AlertTriangle : Info;
+          return (
+            <div key={i} className={`rt-alert ${kind}`} style={{ alignItems: "center" }}>
+              <Icon size={16} />
+              <span style={{ flex: 1 }}>{m.value}</span>
+              {m.messageType === "conflict" && (
+                <button className="rt-btn rt-btn-secondary rt-btn-sm" onClick={reloadLatestRow}><RotateCcw size={13} /> Reload latest</button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // A table cell, typed by the Entity's own field definition — status-like enums become colored
+  // badges, dates/numbers are formatted, images become avatars, the first column carries an
+  // initials avatar so a row is recognizable at a glance.
+  function renderGridCell(row, c, isFirst) {
+    const isFk = !!fkColumnMap[c.bind];
+    const raw = isFk ? (optionLabel(fkColumnMap[c.bind], row[c.bind]) ?? row[c.bind]) : row[c.bind];
+    const type = isFk ? "fk" : screenEntityFields.find((fd) => fd.name === c.bind)?.type;
+    if (type === "image") {
+      return raw
+        ? <img className="rt-avatar" src={`${API_ORIGIN}${raw}`} alt="" />
+        : <span className="rt-avatar" style={{ background: "#f1f5f9", color: "#94a3b8" }}><ImageIcon size={14} /></span>;
+    }
+    if (raw == null || raw === "") return <span style={{ color: "#cbd5e1" }}>—</span>;
+    if (type === "enum") return <span className={`rt-badge ${toneForValue(raw)}`}>{String(raw)}</span>;
+    if (type === "boolean") {
+      const yes = raw === true || raw === "true";
+      return <span className={`rt-badge plain ${yes ? "success" : "neutral"}`}>{yes ? <Check size={12} strokeWidth={3} /> : null}{yes ? "Yes" : "No"}</span>;
+    }
+    if (type === "date") return formatDate(raw);
+    if (type === "integer" || type === "decimal") return formatNumber(raw, type);
+    if (isFirst) {
+      const [bg, fg] = avatarColors(raw);
+      return (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <span className="rt-avatar" style={{ background: bg, color: fg }}>{initialsFor(String(raw))}</span>
+          {String(raw)}
+        </span>
+      );
+    }
+    return String(raw);
+  }
+
   function renderGridScreen(embedded) {
-    const pad = theme.density === "compact" ? "5px 10px" : "10px 14px";
+    const entity = screenForRun.grid.entity || screenForRun.entity;
+    const label = humanize(entity);
+    const plural = pluralize(label);
+    const columns = screenForRun.grid.columns;
     // The ONLY way a brand-new record ever gets created — the grid's own paired form screen,
-    // opened blank (no prefill) rather than pre-filled from a clicked row. Without this there was
-    // no "+ New" anywhere: a fresh app's grids were empty with no visible way to put data in them.
+    // opened blank (no prefill) rather than pre-filled from a clicked row.
     const newRecordScreenName = screenForRun.grid.rowClick?.targetScreen;
     const newRecordEl = newRecordScreenName ? detail.elements.find((e) => e.tag === "Screen" && e.name === newRecordScreenName) : null;
     const openNewRecordForm = () => { if (newRecordEl) openElement(newRecordEl); };
-    const newButtonStyle = {
-      background: theme.primary, color: "#fff", border: "none", borderRadius: `${theme.cornerRadius}px`,
-      padding: theme.density === "compact" ? "6px 14px" : "8px 16px", fontFamily: "inherit", fontSize: "0.9em",
-      fontWeight: 600, cursor: "pointer",
+    const fieldTypeOf = (bind) => (fkColumnMap[bind] ? "string" : screenEntityFields.find((fd) => fd.name === bind)?.type);
+    const total = visibleGridRows?.length || 0;
+    const pageCount = Math.max(1, Math.ceil(total / gridPageSize));
+    const page = Math.min(gridPage, pageCount);
+    const pageRows = visibleGridRows ? visibleGridRows.slice((page - 1) * gridPageSize, page * gridPageSize) : [];
+    const exportCsv = () => {
+      const rows = (visibleGridRows || []).map((row) => columns.map((c) => {
+        const raw = fkColumnMap[c.bind] ? (optionLabel(fkColumnMap[c.bind], row[c.bind]) ?? row[c.bind]) : row[c.bind];
+        return displayText(raw, fieldTypeOf(c.bind));
+      }));
+      downloadTextFile(`${plural.replace(/\s+/g, "-").toLowerCase()}.csv`, toCsv(columns.map((c) => c.header), rows), "text/csv");
     };
-    return (
-      <div style={{ borderRadius: embedded ? 0 : `${theme.cornerRadius}px`, fontFamily: theme.fontFamily, fontSize: `${theme.fontSize}px`, boxShadow: embedded ? "none" : "0 1px 3px rgba(0,0,0,0.06)", border: embedded ? "none" : "1px solid rgba(0,0,0,0.06)", overflow: "hidden" }}>
-        {!embedded && <AppBar theme={theme} appName={detail.name} />}
-        <div style={{ background: embedded ? "transparent" : theme.background, padding: embedded ? 0 : 18 }}>
-          {!embedded && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-              <button className="studio-btn-secondary" onClick={() => setActiveElement(null)}>← Back</button>
-              <div style={{ fontSize: "0.8em", color: "#8a8a99" }}>{activeElement.name}</div>
-            </div>
-          )}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: embedded ? 0 : 10, marginBottom: 4 }}>
-            <div style={{ fontWeight: 700, fontSize: "1.3em", color: embedded ? "var(--st-text)" : theme.primary }}>{embedded ? screenForRun.entity : `Browse: ${screenForRun.entity}`}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: "0.82em", color: "#8a8a99", cursor: "pointer", userSelect: "none" }}>
-                <input
-                  type="checkbox"
-                  checked={showDeleted}
-                  onChange={(e) => { setShowDeleted(e.target.checked); loadGridRows(screenForRun.grid.entity, e.target.checked); }}
-                />
-                Show deleted
-              </label>
-              {newRecordEl && <button style={newButtonStyle} onClick={openNewRecordForm}>+ New {screenForRun.entity}</button>}
+    const numericBind = (bind) => ["integer", "decimal"].includes(fieldTypeOf(bind));
+
+    const content = (
+      <div className="rt-fade">
+        <div className="rt-page-head">
+          <div className="rt-page-icon"><ModuleIcon entity={entity} icon={screenEntityIcon} size={22} /></div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <h1 className="rt-page-title">{plural}</h1>
+            <div className="rt-page-sub">
+              {gridRows ? `${gridRows.length} ${gridRows.length === 1 ? "record" : "records"}${showDeleted ? " · including deleted" : ""}` : "Loading records…"}
             </div>
           </div>
-          {gridRows && (
-            <div style={{ fontSize: "0.8em", color: "#8a8a99", marginBottom: 12 }}>{visibleGridRows.length} of {gridRows.length} record{gridRows.length === 1 ? "" : "s"}</div>
-          )}
-          {gridRows && gridRows.length > 0 && (
-            <input
-              value={gridSearch}
-              onChange={(e) => setGridSearch(e.target.value)}
-              placeholder={`Search ${screenForRun.entity.toLowerCase()}s…`}
-              style={{
-                width: "100%", boxSizing: "border-box", padding: theme.density === "compact" ? "6px 10px" : "8px 12px",
-                borderRadius: `${theme.cornerRadius}px`, border: "1px solid #d1d5db", fontFamily: "inherit", fontSize: "0.9em", marginBottom: 12,
-              }}
-            />
-          )}
-          {successMessage && (
-            <div style={{ background: "#ecfdf5", color: "#047857", border: "1px solid #a7f3d0", borderRadius: `${theme.cornerRadius}px`, padding: "8px 12px", fontSize: "0.85em", marginBottom: 12 }}>
-              {successMessage}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="rt-btn rt-btn-secondary" onClick={exportCsv} disabled={!total}><Download size={15} /> Export</button>
+            {newRecordEl && <button className="rt-btn rt-btn-primary" onClick={openNewRecordForm}><Plus size={16} strokeWidth={2.4} /> New {label}</button>}
+          </div>
+        </div>
+
+        {successMessage && <div className="rt-alert success" style={{ marginBottom: 16 }}><CheckCircle2 size={16} /> {successMessage}</div>}
+
+        <div className="rt-card" style={{ overflow: "hidden" }}>
+          <div className="rt-toolbar">
+            <div className="rt-search" style={{ width: 340 }}>
+              <Search size={15} />
+              <input className="rt-input" value={gridSearch} onChange={(e) => { setGridSearch(e.target.value); setGridPage(1); }} placeholder={`Search ${plural.toLowerCase()}…`} />
+            </div>
+            <div style={{ flex: 1 }} />
+            <label className="rt-switch">
+              <input type="checkbox" checked={showDeleted} onChange={(e) => { setShowDeleted(e.target.checked); setGridPage(1); loadGridRows(screenForRun.grid.entity, e.target.checked); }} />
+              <span className="track" /> Show deleted
+            </label>
+          </div>
+
+          {gridLoading && (
+            <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+              {[0, 1, 2, 3, 4].map((i) => <div key={i} className="rt-skel" style={{ height: 18, width: `${92 - i * 9}%` }} />)}
             </div>
           )}
-          {gridLoading && <div style={{ color: "#888" }}>Loading…</div>}
+
           {!gridLoading && gridRows?.length === 0 && (
-            <div style={{ textAlign: "center", padding: "48px 0", color: "#8a8a99" }}>
-              <Inbox size={32} strokeWidth={1.5} style={{ marginBottom: 10 }} />
-              <div style={{ marginBottom: 14 }}>No {screenForRun.entity.toLowerCase()}s yet.</div>
-              {newRecordEl && <button style={newButtonStyle} onClick={openNewRecordForm}>+ New {screenForRun.entity}</button>}
+            <div className="rt-empty">
+              <div className="rt-empty-icon"><ModuleIcon entity={entity} icon={screenEntityIcon} size={28} /></div>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>No {plural.toLowerCase()} yet</div>
+              <div style={{ color: "var(--rt-muted)", fontSize: 13.5, margin: "6px 0 20px" }}>
+                {newRecordEl ? `Create your first ${label.toLowerCase()} to get started.` : "Records will appear here once they're added."}
+              </div>
+              {newRecordEl && <button className="rt-btn rt-btn-primary" onClick={openNewRecordForm}><Plus size={16} /> New {label}</button>}
             </div>
           )}
-          {!gridLoading && gridRows?.length > 0 && visibleGridRows.length === 0 && (
-            <div style={{ textAlign: "center", padding: "32px 0", color: "#8a8a99" }}>No records match "{gridSearch}".</div>
+
+          {!gridLoading && gridRows?.length > 0 && total === 0 && (
+            <div className="rt-empty" style={{ padding: "44px 24px" }}>
+              <div style={{ fontWeight: 600 }}>No results for "{gridSearch}"</div>
+              <div style={{ color: "var(--rt-muted)", fontSize: 13, marginTop: 4 }}>Try a different search term.</div>
+              <button className="rt-btn rt-btn-ghost" style={{ marginTop: 12 }} onClick={() => setGridSearch("")}>Clear search</button>
+            </div>
           )}
-          {!gridLoading && visibleGridRows?.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: theme.primary }}>
-                  {screenForRun.grid.columns.map((c) => (
-                    <th
-                      key={c.bind}
-                      onClick={() => toggleSort(c.bind)}
-                      style={{ textAlign: "left", padding: pad, color: "#fff", fontWeight: 600, cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}
-                    >
-                      {c.header}{gridSort.bind === c.bind ? (gridSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                    </th>
-                  ))}
-                  <th style={{ background: theme.primary }} />
-                </tr>
-              </thead>
-              <tbody>
-                {visibleGridRows.map((row, i) => (
-                  <tr
-                    key={i}
-                    style={{
-                      background: i % 2 ? "rgba(0,0,0,0.03)" : "transparent", transition: "background 0.12s",
-                      opacity: row.__deletedAt ? 0.55 : 1,
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.06)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = i % 2 ? "rgba(0,0,0,0.03)" : "transparent"; }}
-                  >
-                    {screenForRun.grid.columns.map((c) => {
-                      const display = fkColumnMap[c.bind] ? (optionLabel(fkColumnMap[c.bind], row[c.bind]) ?? row[c.bind]) : row[c.bind];
-                      const isImageColumn = screenEntityFields.find((fd) => fd.name === c.bind)?.type === "image";
+
+          {!gridLoading && total > 0 && (
+            <>
+              <div className="rt-table-wrap">
+                <table className="rt-table">
+                  <thead>
+                    <tr>
+                      {columns.map((c) => {
+                        const sorted = gridSort.bind === c.bind;
+                        return (
+                          <th key={c.bind} className={`sortable${sorted ? " sorted" : ""}${numericBind(c.bind) ? " num" : ""}`} onClick={() => toggleSort(c.bind)}>
+                            {c.header}
+                            <span className="sort-ind">{sorted ? (gridSort.dir === "asc" ? <ChevronUp size={13} /> : <ChevronDown size={13} />) : <ArrowUpDown size={12} />}</span>
+                          </th>
+                        );
+                      })}
+                      <th style={{ width: 1 }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageRows.map((row, i) => {
+                      const editable = !row.__deletedAt && screenForRun.grid.rowClick?.targetScreen;
                       return (
-                        <td
-                          key={c.bind}
-                          onClick={() => screenForRun.grid.rowClick?.targetScreen && openRowForEdit(screenForRun.grid.rowClick.targetScreen, row)}
-                          style={{ padding: pad, borderBottom: "1px solid rgba(0,0,0,0.08)", cursor: screenForRun.grid.rowClick ? "pointer" : "default" }}
-                        >
-                          {isImageColumn
-                            ? (display ? <img src={`${API_ORIGIN}${display}`} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: "50%", display: "block" }} /> : "—")
-                            : String(display ?? "")}
-                        </td>
+                        <tr key={row[screenKeyField] ?? i} className={`${editable ? "clickable" : ""}${row.__deletedAt ? " deleted" : ""}`}
+                          onClick={() => editable && openRowForEdit(screenForRun.grid.rowClick.targetScreen, row)}>
+                          {columns.map((c, ci) => (
+                            <td key={c.bind} className={`${ci === 0 ? "primary-cell" : ""}${numericBind(c.bind) ? " num" : ""}`}>{renderGridCell(row, c, ci === 0)}</td>
+                          ))}
+                          <td className="actions" onClick={(e) => e.stopPropagation()}>
+                            {row.__deletedAt ? (
+                              <button className="rt-btn rt-btn-secondary rt-btn-sm" onClick={() => restoreGridRow(screenForRun.grid.entity, row, screenKeyField)} disabled={restoringKey === row[screenKeyField]}>
+                                <RotateCcw size={13} /> {restoringKey === row[screenKeyField] ? "Restoring…" : "Restore"}
+                              </button>
+                            ) : (
+                              <span className="rt-row-actions">
+                                {editable && <button className="rt-icon-btn sm" title="Edit" onClick={() => openRowForEdit(screenForRun.grid.rowClick.targetScreen, row)}><Pencil size={14} /></button>}
+                                <button className="rt-icon-btn sm danger" title="Delete" onClick={() => deleteGridRow(row, screenKeyField)}><Trash2 size={14} /></button>
+                              </span>
+                            )}
+                          </td>
+                        </tr>
                       );
                     })}
-                    <td style={{ padding: pad, borderBottom: "1px solid rgba(0,0,0,0.08)" }}>
-                      {row.__deletedAt ? (
-                        <button
-                          onClick={() => restoreGridRow(screenForRun.grid.entity, row, screenKeyField)}
-                          disabled={restoringKey === row[screenKeyField]}
-                          style={{ background: "none", border: "1px solid #16a34a", color: "#16a34a", borderRadius: `${theme.cornerRadius}px`, fontSize: "0.85em", padding: "3px 10px", cursor: "pointer" }}
-                        >
-                          {restoringKey === row[screenKeyField] ? "Restoring…" : "Restore"}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => deleteGridRow(row, screenKeyField)}
-                          style={{ background: "none", border: `1px solid ${theme.accent}`, color: theme.accent, borderRadius: `${theme.cornerRadius}px`, fontSize: "0.85em", padding: "3px 10px", cursor: "pointer" }}
-                          onMouseEnter={(e) => { e.currentTarget.style.background = theme.accent; e.currentTarget.style.color = "#fff"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = theme.accent; }}
-                        >
-                          Delete
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div className="rt-pager">
+                <span>Showing <strong style={{ color: "var(--rt-text)" }}>{(page - 1) * gridPageSize + 1}–{Math.min(page * gridPageSize, total)}</strong> of <strong style={{ color: "var(--rt-text)" }}>{total}</strong></span>
+                <div style={{ flex: 1 }} />
+                <span>Rows</span>
+                <select className="rt-input" value={gridPageSize} onChange={(e) => { setGridPageSize(Number(e.target.value)); setGridPage(1); }} style={{ width: 76, padding: "5px 28px 5px 10px", fontSize: 12.5 }}>
+                  {[10, 25, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+                <button className="rt-icon-btn sm" onClick={() => setGridPage(page - 1)} disabled={page <= 1} title="Previous page" style={{ opacity: page <= 1 ? 0.4 : 1 }}><ChevronLeft size={16} /></button>
+                <span>Page {page} of {pageCount}</span>
+                <button className="rt-icon-btn sm" onClick={() => setGridPage(page + 1)} disabled={page >= pageCount} title="Next page" style={{ opacity: page >= pageCount ? 0.4 : 1 }}><ChevronRight size={16} /></button>
+              </div>
+            </>
+          )}
+        </div>
+        {renderRunMessages()}
+      </div>
+    );
+    if (embedded) return content;
+    return (
+      <div className={`${rtClass} rt-frame`} style={rtVars}>
+        <AppBar theme={theme} appName={detail.name} />
+        <div style={{ padding: 24 }}>
+          <button className="rt-btn rt-btn-ghost rt-btn-sm" onClick={() => setActiveElement(null)} style={{ marginBottom: 14 }}><ArrowLeft size={14} /> Back to {activeElement.tag === "Screen" ? "screens" : "Studio"}</button>
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  // One input for one UIField, typed by the Entity's field definition. Shared by the normal form
+  // page and the sign-in screens, so both get identical, real controls.
+  function renderFieldControl(f) {
+    const fieldDef = screenEntityFields.find((fd) => fd.name === f.bind);
+    const value = runFieldValues[f.bind] ?? "";
+    const setValue = (v) => setRunFieldValues((cur) => ({ ...cur, [f.bind]: v }));
+    // password/currentPassword/newPassword are submitted-only (never real Fields on User — see
+    // aiService.ts's prompt) so fieldDef is always undefined for them; mask them regardless.
+    const isPasswordField = /password/i.test(f.bind || "");
+    const isLongText = !fieldDef?.type || fieldDef.type === "string"
+      ? /(description|notes?|comments?|address|remarks|details|message|reason|summary|diagnosis|prescription|instructions|bio|feedback)$/i.test(f.bind || "")
+      : false;
+    const id = `rtf-${f.bind}`;
+    let control;
+    let span2 = isLongText;
+    if (isPasswordField) {
+      control = <input id={id} className="rt-input" type="password" autoComplete={f.bind === "password" ? "current-password" : "new-password"} value={value} onChange={(e) => setValue(e.target.value)} placeholder="••••••••" />;
+    } else if (fieldDef?.type === "image") {
+      span2 = true;
+      const uploading = uploadingFields[f.bind];
+      control = (
+        <div className="rt-upload">
+          {value ? <img src={`${API_ORIGIN}${value}`} alt="" /> : <div className="ph"><ImageIcon size={22} /></div>}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{value ? "Change photo" : "Upload a photo"}</div>
+            <div style={{ fontSize: 12, color: "var(--rt-muted)", marginTop: 2 }}>PNG, JPG, GIF or WebP</div>
+          </div>
+          <label className="rt-btn rt-btn-secondary rt-btn-sm" style={{ cursor: f.readonly || uploading ? "default" : "pointer", opacity: f.readonly ? 0.5 : 1 }}>
+            {uploading ? <span className="spinner" style={{ width: 13, height: 13, color: "var(--rt-primary)" }} /> : <Upload size={14} />} {uploading ? "Uploading…" : "Choose file"}
+            <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" disabled={f.readonly || uploading} hidden
+              onChange={(e) => { const file = e.target.files?.[0]; if (file) handleImageUpload(f.bind, file); }} />
+          </label>
+        </div>
+      );
+    } else if (f.control === "dropdown" && f.optionsFrom) {
+      control = <LookupPicker value={value} options={optionsCache[f.optionsFrom]} disabled={f.readonly} placeholder={`Select ${humanize(f.label || f.bind).toLowerCase()}…`} onChange={setValue} />;
+    } else if (fieldDef?.type === "enum" && fieldDef.values.length > 0) {
+      control = (
+        <select id={id} className="rt-input" disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} style={{ color: value ? undefined : "#94a3b8" }}>
+          <option value="">Select…</option>
+          {fieldDef.values.map((v) => <option key={v} value={v} style={{ color: "#0f172a" }}>{v}</option>)}
+        </select>
+      );
+    } else if (fieldDef?.type === "boolean") {
+      const checked = value === true || value === "true";
+      control = (
+        <label className="rt-switch" style={{ height: 40 }}>
+          <input type="checkbox" disabled={f.readonly} checked={checked} onChange={(e) => setValue(e.target.checked)} />
+          <span className="track" /> {checked ? "Yes" : "No"}
+        </label>
+      );
+    } else if (fieldDef?.type === "date") {
+      control = <input id={id} className="rt-input" type="date" disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} />;
+    } else if (fieldDef?.type === "integer" || fieldDef?.type === "decimal") {
+      control = <input id={id} className="rt-input" type="number" step={fieldDef.type === "decimal" ? "any" : "1"} disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} placeholder="0" />;
+    } else if (isLongText) {
+      control = <textarea id={id} className="rt-input" rows={3} disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} style={{ resize: "vertical" }} />;
+    } else {
+      const isEmail = /email/i.test(f.bind || "");
+      control = <input id={id} className="rt-input" type={isEmail ? "email" : "text"} disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} placeholder={isEmail ? "name@example.com" : ""} />;
+    }
+    return (
+      <div key={f.bind} className={span2 ? "span-2" : undefined}>
+        <label className="rt-label" htmlFor={id}>{f.label}{fieldDef?.required && <span className="req">*</span>}</label>
+        {control}
+      </div>
+    );
+  }
+
+  // Button styling by what the action does — the screen's own XML decides WHICH buttons exist.
+  const PRIMARY_ACTIONS = new Set(["save", "login", "register", "changePassword", "verifyEmail", "requestPasswordReset", "resetPassword"]);
+  function buttonClassFor(action) {
+    if (PRIMARY_ACTIONS.has(action)) return "rt-btn rt-btn-primary";
+    if (action === "delete") return "rt-btn rt-btn-danger";
+    return "rt-btn rt-btn-secondary";
+  }
+  // "cancel" is pure navigation (a built-in with no database work) — handled client-side as
+  // "back to this entity's list", which is what a user expects it to do.
+  function handleFormButton(b) {
+    if (b.action === "cancel") {
+      const gridEl = screenForRun?.entity && gridScreenForEntity(screenForRun.entity);
+      if (gridEl && gridEl.name !== activeElement.name) openElement(gridEl); else setActiveElement(null);
+      return;
+    }
+    runAction(b.action);
+  }
+
+  // Sign-in / sign-up / verify / reset — a split screen with the app's own brand panel, the way a
+  // real product's login looks, instead of a bare form floating in the corner.
+  function renderAuthScreen() {
+    const name = activeElement.name;
+    const onTabs = needsLoginGate && (name === "Login" || name === "Signup");
+    const onPreLoginAux = needsLoginGate && PRE_LOGIN_AUX_SCREENS.has(name);
+    const headings = {
+      Login: ["Welcome back", `Sign in to your ${detail.name} account.`],
+      Signup: ["Create your account", `Get started with ${detail.name} in a minute.`],
+      VerifyEmail: ["Verify your email", "Enter the code we just emailed you."],
+      ForgotPassword: ["Reset your password", "We'll email you a code to reset it."],
+      ResetPassword: ["Choose a new password", "Enter the code from your email and a new password."],
+      ChangePassword: ["Update your password", "Choose a new password to continue."],
+    };
+    const [title, sub] = headings[name] || [humanize(name), ""];
+    const brandModules = buildAppModules(detail).slice(0, 4);
+    return (
+      <div className="rt-auth">
+        <div className="rt-auth-brand">
+          <div style={{ display: "flex", alignItems: "center", gap: 12, position: "relative", zIndex: 1 }}>
+            {theme.logo
+              ? <img src={theme.logo} alt="" style={{ height: 34 }} onError={(e) => { e.target.style.display = "none"; }} />
+              : <div style={{ width: 38, height: 38, borderRadius: 11, background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 17 }}>{detail.name.charAt(0).toUpperCase()}</div>}
+            <div style={{ fontWeight: 700, fontSize: 17 }}>{detail.name}</div>
+          </div>
+          <div style={{ position: "relative", zIndex: 1, maxWidth: 420 }}>
+            <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-0.025em", lineHeight: 1.15 }}>Everything your team needs, in one place.</div>
+            {brandModules.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 28 }}>
+                {brandModules.map((m) => (
+                  <div key={m.key} style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 14.5, opacity: 0.95 }}>
+                    <span style={{ width: 32, height: 32, borderRadius: 9, background: "rgba(255,255,255,0.16)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <ModuleIcon entity={m.key} icon={m.icon} size={16} />
+                    </span>
+                    Manage {pluralize(m.label).toLowerCase()}
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          )}
-          {runMessages.length > 0 && (
-            <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
-              {runMessages.map((m, i) => (
-                <div
-                  key={i}
-                  style={{
-                    fontSize: 13, padding: m.messageType === "error" || m.messageType === "conflict" ? "8px 12px" : 0,
-                    borderRadius: `${theme.cornerRadius}px`,
-                    background: m.messageType === "error" ? "#fef2f2" : m.messageType === "conflict" ? "#fffbeb" : "transparent",
-                    border: m.messageType === "error" ? "1px solid #fecaca" : m.messageType === "conflict" ? "1px solid #fde68a" : "none",
-                    color: m.messageType === "error" ? "#dc2626" : m.messageType === "conflict" ? "#b45309" : "inherit",
-                  }}
-                >
-                  {m.value}
+              </div>
+            )}
+          </div>
+          <div style={{ position: "relative", zIndex: 1, fontSize: 12.5, opacity: 0.75, display: "flex", alignItems: "center", gap: 8 }}>
+            <Lock size={13} /> Secure sign-in · Your data stays private
+          </div>
+        </div>
+        <div className="rt-auth-form">
+          <div className="rt-auth-card rt-fade">
+            {onTabs && (
+              <div className="rt-tabs">
+                {["Login", "Signup"].map((n) => {
+                  const screenEl = detail.elements.find((e) => e.tag === "Screen" && e.name === n);
+                  return (
+                    <button key={n} className={name === n ? "active" : ""} disabled={!screenEl}
+                      onClick={() => { if (screenEl && name !== n) openElement(screenEl); else if (!screenEl) setError(`No ${n} screen found.`); }}>
+                      {n === "Signup" ? "Create account" : "Sign in"}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>{title}</h1>
+            {sub && <div style={{ color: "var(--rt-muted)", fontSize: 14, marginTop: 6, marginBottom: 24 }}>{sub}</div>}
+            {name === "ChangePassword" && mustChangePassword && (
+              <div className="rt-alert warning" style={{ marginBottom: 16 }}><AlertTriangle size={16} /> You must change your password before continuing.</div>
+            )}
+            {successMessage && <div className="rt-alert success" style={{ marginBottom: 16 }}><CheckCircle2 size={16} /> {successMessage}</div>}
+            <form onSubmit={(e) => { e.preventDefault(); const primary = screenForRun.buttons.find((b) => PRIMARY_ACTIONS.has(b.action)); if (primary && !running) runAction(primary.action); }}
+              style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {screenForRun.fields.map((f) => renderFieldControl(f))}
+              {name === "Login" && accountHasEmailIdentity && (
+                <div style={{ marginTop: -6, textAlign: "right" }}>
+                  <button type="button" className="rt-btn rt-btn-ghost rt-btn-sm" style={{ color: "var(--rt-primary)", padding: "2px 4px" }}
+                    onClick={() => { const fpEl = detail.elements.find((e) => e.tag === "Screen" && e.name === "ForgotPassword"); if (fpEl) openElement(fpEl); else setError("No ForgotPassword screen found."); }}>
+                    Forgot password?
+                  </button>
                 </div>
+              )}
+              {screenForRun.buttons.map((b) => (
+                <button key={b.action} type={PRIMARY_ACTIONS.has(b.action) ? "submit" : "button"} className={buttonClassFor(b.action)} disabled={running}
+                  onClick={PRIMARY_ACTIONS.has(b.action) ? undefined : () => handleFormButton(b)} style={{ width: "100%", padding: "11px 14px", fontSize: 14 }}>
+                  {running && PRIMARY_ACTIONS.has(b.action) ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Please wait…</> : b.label}
+                </button>
               ))}
-            </div>
-          )}
+            </form>
+            {(name === "Login" || name === "Signup") && accountHasEmailIdentity && (
+              <div style={{ marginTop: 22 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, color: "var(--rt-muted)", fontSize: 12.5 }}>
+                  <span style={{ flex: 1, height: 1, background: "var(--rt-border)" }} /> or continue with <span style={{ flex: 1, height: 1, background: "var(--rt-border)" }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
+                  <GoogleLogin
+                    onSuccess={(credentialResponse) => runAction("googleLogin", { credential: credentialResponse.credential })}
+                    onError={() => setRunMessages([{ type: "message", messageType: "error", value: "Google sign-in failed." }])}
+                    theme="outline" size="large" width="400" text={name === "Signup" ? "signup_with" : "signin_with"}
+                  />
+                  {GITHUB_CLIENT_ID && (
+                    <button type="button" className="rt-btn rt-btn-secondary" onClick={handleGithubOAuthClick} style={{ width: "100%", padding: "10px 14px" }}>
+                      <GithubMark /> {name === "Signup" ? "Sign up with GitHub" : "Sign in with GitHub"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {onPreLoginAux && (
+              <div style={{ textAlign: "center", marginTop: 20 }}>
+                <button className="rt-btn rt-btn-ghost rt-btn-sm" onClick={() => { const loginEl = detail.elements.find((e) => e.tag === "Screen" && e.name === "Login"); if (loginEl) openElement(loginEl); }}>
+                  <ArrowLeft size={14} /> Back to sign in
+                </button>
+              </div>
+            )}
+            {renderRunMessages()}
+          </div>
         </div>
       </div>
     );
   }
 
   function renderFormScreen(embedded) {
-    return (
-      <div style={{ borderRadius: embedded ? 0 : `${theme.cornerRadius}px`, fontFamily: theme.fontFamily, fontSize: `${theme.fontSize}px`, maxWidth: embedded ? "none" : 480, boxShadow: embedded ? "none" : "0 1px 3px rgba(0,0,0,0.06)", border: embedded ? "none" : "1px solid rgba(0,0,0,0.06)", overflow: "hidden" }}>
-        {!embedded && <AppBar theme={theme} appName={detail.name} />}
-        <div style={{ background: embedded ? "transparent" : theme.background, padding: embedded ? 0 : 18 }}>
-          {/* No "← Back" on Login/Signup (the tab switcher below is their navigation) or while a
-              password change is mandatory (ChangePassword) — but VerifyEmail/ForgotPassword/
-              ResetPassword, also reachable pre-login, DO get a way out: back to Login. */}
-          {!embedded && (() => {
-            const onAuthTabScreen = needsLoginGate && (activeElement.name === "Login" || activeElement.name === "Signup");
-            const onPreLoginAuxScreen = needsLoginGate && PRE_LOGIN_AUX_SCREENS.has(activeElement.name);
-            const forcedPasswordChange = activeElement.name === "ChangePassword" && mustChangePassword;
-            return (
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-                {!onAuthTabScreen && !forcedPasswordChange && (
-                  <button
-                    className="studio-btn-secondary"
-                    onClick={() => {
-                      const loginEl = onPreLoginAuxScreen && detail.elements.find((e) => e.tag === "Screen" && e.name === "Login");
-                      if (loginEl) openElement(loginEl); else setActiveElement(null);
-                    }}
-                  >
-                    ← Back{onPreLoginAuxScreen ? " to Login" : ""}
-                  </button>
+    const name = activeElement.name;
+    const isAuthScreen = AUTH_SCREEN_NAMES.has(name) && (needsLoginGate || (name === "ChangePassword" && mustChangePassword));
+    if (isAuthScreen) {
+      const auth = renderAuthScreen();
+      return embedded ? auth : <div className={`${rtClass} rt-frame`} style={{ ...rtVars, display: "flex", minHeight: 560 }}>{auth}</div>;
+    }
+    const entity = screenForRun.entity;
+    const label = entity ? humanize(entity) : humanize(name);
+    const editing = !!runFieldValues[screenKeyField];
+    const isChangePassword = name === "ChangePassword";
+    const title = isChangePassword ? "Change password" : `${editing ? "Edit" : "New"} ${label}`;
+    const sub = isChangePassword
+      ? "Choose a new password for your account."
+      : editing ? `Update this ${label.toLowerCase()}'s details and save your changes.` : `Fill in the details below to create a new ${label.toLowerCase()}.`;
+    const backGrid = entity ? gridScreenForEntity(entity) : null;
+    const deleteButton = editing ? screenForRun.buttons.find((b) => b.action === "delete") : null;
+    const otherButtons = screenForRun.buttons.filter((b) => b !== deleteButton && (b.action !== "delete" || editing));
+    const hasCancel = otherButtons.some((b) => b.action === "cancel");
+
+    const content = (
+      <div className="rt-fade" style={{ maxWidth: 900 }}>
+        <div className="rt-page-head">
+          <div className="rt-page-icon">
+            {isChangePassword ? <KeyRound size={22} /> : <ModuleIcon entity={entity} icon={screenEntityIcon} size={22} />}
+          </div>
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <h1 className="rt-page-title">{title}</h1>
+            <div className="rt-page-sub">{sub}</div>
+          </div>
+        </div>
+        {successMessage && <div className="rt-alert success" style={{ marginBottom: 16 }}><CheckCircle2 size={16} /> {successMessage}</div>}
+        <form className="rt-card" onSubmit={(e) => { e.preventDefault(); const primary = otherButtons.find((b) => PRIMARY_ACTIONS.has(b.action)); if (primary && !running) runAction(primary.action); }}>
+          <div className="rt-card-head">
+            <div style={{ flex: 1 }}>
+              <div className="rt-card-title">{isChangePassword ? "Password" : `${label} details`}</div>
+              <div className="rt-card-sub">Fields marked <span style={{ color: "#dc2626" }}>*</span> are required.</div>
+            </div>
+          </div>
+          <div className="rt-form-grid">{screenForRun.fields.map((f) => renderFieldControl(f))}</div>
+          <div className="rt-form-foot">
+            {deleteButton && (
+              <button type="button" className={buttonClassFor("delete")} disabled={running} onClick={() => handleFormButton(deleteButton)}>
+                <Trash2 size={14} /> {deleteButton.label}
+              </button>
+            )}
+            <div style={{ flex: 1 }} />
+            {!hasCancel && backGrid && backGrid.name !== name && (
+              <button type="button" className="rt-btn rt-btn-secondary" onClick={() => openElement(backGrid)}>Cancel</button>
+            )}
+            {otherButtons.map((b) => (
+              <button key={b.action} type={PRIMARY_ACTIONS.has(b.action) ? "submit" : "button"} className={buttonClassFor(b.action)} disabled={running}
+                onClick={PRIMARY_ACTIONS.has(b.action) ? undefined : () => handleFormButton(b)}>
+                {running && PRIMARY_ACTIONS.has(b.action) ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Saving…</> : (
+                  <>{b.action === "save" && <Check size={15} strokeWidth={2.5} />}{b.label}</>
                 )}
-                <div style={{ fontSize: "0.8em", color: "#8a8a99" }}>{activeElement.name}</div>
-              </div>
-            );
-          })()}
-          {/* The very first account has nowhere to come from except Signup — a real,
-              equally-weighted tab switcher (not a small link under Login) so a brand
-              new user actually notices there's a way to create an account at all. */}
-          {needsLoginGate && (activeElement.name === "Login" || activeElement.name === "Signup") ? (
-            <div style={{ display: "flex", gap: 0, marginTop: embedded ? 0 : 10, marginBottom: 16, borderBottom: `1px solid ${theme.accent}33` }}>
-              {["Signup", "Login"].map((name) => {
-                const screenEl = detail.elements.find((e) => e.tag === "Screen" && e.name === name);
-                const active = activeElement.name === name;
-                return (
-                  <button
-                    key={name}
-                    onClick={() => { if (screenEl && !active) openElement(screenEl); else if (!screenEl) setError(`No ${name} screen found.`); }}
-                    style={{
-                      flex: 1, padding: "10px 0", background: "none", border: "none", cursor: screenEl ? "pointer" : "default",
-                      fontWeight: active ? 700 : 500, fontSize: "1em", fontFamily: "inherit",
-                      color: active ? theme.primary : "#8a8a99",
-                      borderBottom: active ? `2px solid ${theme.primary}` : "2px solid transparent",
-                      opacity: screenEl ? 1 : 0.4,
-                    }}
-                  >
-                    {name === "Signup" ? "Create account" : "Log in"}
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div style={{ fontWeight: 700, fontSize: "1.15em", marginTop: embedded ? 0 : 10, marginBottom: 12, color: theme.primary }}>
-              {embedded ? activeElement.name
-                : activeElement.name === "ChangePassword" ? "Change Password"
-                : `${runFieldValues[screenKeyField] ? "Edit" : "New"} ${screenForRun.entity}`}
-            </div>
-          )}
-          {activeElement.name === "ChangePassword" && mustChangePassword && (
-            <div style={{ background: "#fffbeb", color: "#92400e", border: "1px solid #fde68a", borderRadius: `${theme.cornerRadius}px`, padding: "8px 12px", fontSize: "0.85em", marginBottom: 12 }}>
-              You must change your password before continuing.
-            </div>
-          )}
-          {successMessage && (
-            <div style={{ background: "#ecfdf5", color: "#047857", border: "1px solid #a7f3d0", borderRadius: `${theme.cornerRadius}px`, padding: "8px 12px", fontSize: "0.85em", marginBottom: 12 }}>
-              {successMessage}
-            </div>
-          )}
-          {screenForRun.fields.map((f) => {
-            const fieldDef = screenEntityFields.find((fd) => fd.name === f.bind);
-            const inputStyle = {
-              width: "100%", boxSizing: "border-box", padding: theme.density === "compact" ? "5px 8px" : "8px 10px",
-              borderRadius: `${theme.cornerRadius}px`, border: "1px solid #d1d5db", fontFamily: "inherit", fontSize: "inherit",
-              background: f.readonly ? "#f3f4f6" : "#fff", color: f.readonly ? "#6b7280" : "inherit",
-            };
-            const focusHandlers = {
-              onFocus: (e) => { e.target.style.borderColor = theme.accent; e.target.style.outline = "none"; },
-              onBlur: (e) => { e.target.style.borderColor = "#d1d5db"; },
-            };
-            const value = runFieldValues[f.bind] ?? "";
-            const setValue = (v) => setRunFieldValues((cur) => ({ ...cur, [f.bind]: v }));
-
-            // password/currentPassword/newPassword are submitted-only (never real Fields
-            // on User — see aiService.ts's prompt) so fieldDef is always undefined for
-            // them; mask them regardless, by bind name, before falling through to type.
-            const isPasswordField = /password/i.test(f.bind || "");
-
-            let control;
-            if (isPasswordField) {
-              control = <input type="password" autoComplete={f.bind === "password" ? "current-password" : "new-password"} style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} {...focusHandlers} />;
-            } else if (fieldDef?.type === "image") {
-              const uploading = uploadingFields[f.bind];
-              control = (
-                <div>
-                  {value && (
-                    <img
-                      src={`${API_ORIGIN}${value}`} alt=""
-                      style={{ display: "block", width: 96, height: 96, objectFit: "cover", borderRadius: `${theme.cornerRadius}px`, marginBottom: 8, border: "1px solid #d1d5db" }}
-                    />
-                  )}
-                  <input
-                    type="file" accept="image/png,image/jpeg,image/gif,image/webp" disabled={f.readonly || uploading}
-                    onChange={(e) => { const file = e.target.files?.[0]; if (file) handleImageUpload(f.bind, file); }}
-                    style={{ fontSize: "0.85em" }}
-                  />
-                  {uploading && <div style={{ fontSize: "0.8em", color: "#8a8a99", marginTop: 4 }}>Uploading…</div>}
-                </div>
-              );
-            } else if (f.control === "dropdown" && f.optionsFrom) {
-              const opts = optionsCache[f.optionsFrom];
-              control = (
-                <LookupPicker
-                  value={value}
-                  options={opts}
-                  disabled={f.readonly}
-                  theme={theme}
-                  inputStyle={inputStyle}
-                  onChange={setValue}
-                />
-              );
-            } else if (fieldDef?.type === "enum" && fieldDef.values.length > 0) {
-              control = (
-                <select style={inputStyle} disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} {...focusHandlers}>
-                  <option value="">— Select —</option>
-                  {fieldDef.values.map((v) => <option key={v} value={v}>{v}</option>)}
-                </select>
-              );
-            } else if (fieldDef?.type === "boolean") {
-              control = (
-                <input type="checkbox" disabled={f.readonly} checked={value === true || value === "true"} onChange={(e) => setValue(e.target.checked)} style={{ width: 18, height: 18 }} />
-              );
-            } else if (fieldDef?.type === "date") {
-              control = <input type="date" disabled={f.readonly} style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} {...focusHandlers} />;
-            } else if (fieldDef?.type === "integer" || fieldDef?.type === "decimal") {
-              control = (
-                <input
-                  type="number" step={fieldDef.type === "decimal" ? "any" : "1"} disabled={f.readonly} style={inputStyle}
-                  value={value} onChange={(e) => setValue(e.target.value)} {...focusHandlers}
-                />
-              );
-            } else {
-              control = <input type="text" disabled={f.readonly} style={inputStyle} value={value} onChange={(e) => setValue(e.target.value)} {...focusHandlers} />;
-            }
-
-            return (
-              <div key={f.bind} style={{ marginBottom: theme.density === "compact" ? 6 : 12 }}>
-                <label style={{ fontSize: "0.85em", fontWeight: 600, display: "block", marginBottom: 4 }}>
-                  {f.label}{fieldDef?.required && <span style={{ color: "#dc2626" }}> *</span>}
-                </label>
-                {control}
-              </div>
-            );
-          })}
-          <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-            {screenForRun.buttons.map((b) => (
-              <button
-                key={b.action}
-                disabled={running}
-                onClick={() => runAction(b.action)}
-                style={{
-                  background: b.action === "delete" ? "none" : theme.primary, color: b.action === "delete" ? "#dc2626" : "#fff",
-                  border: b.action === "delete" ? "1px solid #dc2626" : "none", borderRadius: `${theme.cornerRadius}px`,
-                  padding: theme.density === "compact" ? "6px 14px" : "9px 18px", fontFamily: "inherit", fontSize: "inherit",
-                  fontWeight: 600, cursor: running ? "default" : "pointer", opacity: running ? 0.6 : 1, transition: "opacity 0.12s",
-                }}
-                onMouseEnter={(e) => { if (!running) e.currentTarget.style.opacity = "0.85"; }}
-                onMouseLeave={(e) => { if (!running) e.currentTarget.style.opacity = "1"; }}
-              >
-                {running ? "Running…" : b.label}
               </button>
             ))}
           </div>
-          {/* "Forgot password?" only on Login, and only for the current (email-based) account
-              shape — an older, username-based app has no such screen to send them to. */}
-          {activeElement.name === "Login" && accountHasEmailIdentity && (
-            <div style={{ marginTop: 10 }}>
-              <button
-                onClick={() => {
-                  const fpEl = detail.elements.find((e) => e.tag === "Screen" && e.name === "ForgotPassword");
-                  if (fpEl) openElement(fpEl); else setError("No ForgotPassword screen found.");
-                }}
-                style={{ background: "none", border: "none", padding: 0, color: theme.accent, fontSize: "0.85em", cursor: "pointer", fontFamily: "inherit", textDecoration: "underline" }}
-              >
-                Forgot password?
-              </button>
+        </form>
+        {renderRunMessages()}
+      </div>
+    );
+    if (embedded) return content;
+    return (
+      <div className={`${rtClass} rt-frame`} style={rtVars}>
+        <AppBar theme={theme} appName={detail.name} />
+        <div style={{ padding: 24 }}>
+          <button className="rt-btn rt-btn-ghost rt-btn-sm" onClick={() => setActiveElement(null)} style={{ marginBottom: 14 }}><ArrowLeft size={14} /> Back to screens</button>
+          {content}
+        </div>
+      </div>
+    );
+  }
+
+  function renderAppDashboard(modules) {
+    const formModules = modules.filter((m) => m.formScreenEl);
+    const counts = modules.map((m) => (typeof moduleCounts[m.key] === "number" ? moduleCounts[m.key] : 0));
+    const maxCount = Math.max(1, ...counts);
+    const totalRecords = counts.reduce((a, b) => a + b, 0);
+    const who = displayNameFor(accountEntityEl && loggedIn ? loggedInIdentity : user?.email);
+    return (
+      <div className="rt-fade">
+        <div className="rt-hero">
+          <div style={{ position: "relative", zIndex: 1 }}>
+            <div style={{ fontSize: 13, opacity: 0.85, display: "flex", alignItems: "center", gap: 7 }}>
+              <CalendarDays size={14} /> {new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
             </div>
-          )}
-          {/* Google/GitHub sign-in — never XML-declared (see aiService.ts's prompt), injected
-              here automatically whenever the account entity supports email identity at all. */}
-          {(activeElement.name === "Login" || activeElement.name === "Signup") && accountHasEmailIdentity && (
-            <div style={{ marginTop: 16, paddingTop: 16, borderTop: `1px solid ${theme.accent}22`, display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
-              <div style={{ fontSize: "0.8em", color: "#8a8a99" }}>or continue with</div>
-              <GoogleLogin
-                onSuccess={(credentialResponse) => runAction("googleLogin", { credential: credentialResponse.credential })}
-                onError={() => setRunMessages([{ type: "message", messageType: "error", value: "Google sign-in failed." }])}
-                theme="outline"
-                size="medium"
-                text={activeElement.name === "Signup" ? "signup_with" : "signin_with"}
-              />
-              {GITHUB_CLIENT_ID && (
-                <button
-                  onClick={handleGithubOAuthClick}
-                  style={{
-                    width: 232, padding: "8px 0", borderRadius: `${theme.cornerRadius}px`, border: "1px solid #d1d5db",
-                    background: "#fff", cursor: "pointer", fontFamily: "inherit", fontSize: "0.9em", fontWeight: 500,
-                  }}
-                >
-                  {activeElement.name === "Signup" ? "Sign up with GitHub" : "Sign in with GitHub"}
-                </button>
-              )}
+            <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.025em", marginTop: 8 }}>{greetingForHour(new Date().getHours())}, {who}</div>
+            <div style={{ fontSize: 14, opacity: 0.9, marginTop: 6, maxWidth: 560 }}>
+              Here's what's happening across {detail.name} — {totalRecords.toLocaleString()} record{totalRecords === 1 ? "" : "s"} in {modules.length} module{modules.length === 1 ? "" : "s"}.
             </div>
-          )}
-          {runMessages.length > 0 && (
-            <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
-              {runMessages.map((m, i) => (
-                <div
-                  key={i}
-                  style={{
-                    fontSize: "0.9em", padding: m.messageType === "error" || m.messageType === "conflict" ? "8px 12px" : 0,
-                    borderRadius: `${theme.cornerRadius}px`,
-                    background: m.messageType === "error" ? "#fef2f2" : m.messageType === "conflict" ? "#fffbeb" : "transparent",
-                    border: m.messageType === "error" ? "1px solid #fecaca" : m.messageType === "conflict" ? "1px solid #fde68a" : "none",
-                    color: m.messageType === "error" ? "#dc2626" : m.messageType === "conflict" ? "#b45309" : "inherit",
-                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
-                  }}
-                >
-                  <span>{m.value}</span>
-                  {m.messageType === "conflict" && (
-                    <button
-                      onClick={reloadLatestRow}
-                      style={{
-                        background: "#b45309", color: "#fff", border: "none", borderRadius: `${theme.cornerRadius}px`,
-                        padding: "4px 10px", fontSize: "0.85em", fontWeight: 600, cursor: "pointer", fontFamily: "inherit", flexShrink: 0,
-                      }}
-                    >
-                      Reload latest
-                    </button>
-                  )}
+            {formModules.length > 0 && (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 20 }}>
+                {formModules.slice(0, 3).map((m) => (
+                  <button key={m.key} className="rt-hero-btn" onClick={() => openElement(m.formScreenEl)}><Plus size={15} /> New {m.label}</button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16, marginTop: 22 }}>
+          {modules.map((m) => {
+            const count = moduleCounts[m.key];
+            const [bg, fg] = avatarColors(m.key);
+            return (
+              <button key={m.key} className="rt-card rt-kpi" onClick={() => openElement(m.screenEl)}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div className="rt-kpi-icon" style={{ background: bg, color: fg }}><ModuleIcon entity={m.key} icon={m.icon} size={19} /></div>
+                  <ArrowUpRight size={16} style={{ color: "#94a3b8" }} />
                 </div>
+                <div className="rt-kpi-value">
+                  {count === "loading" ? <span className="rt-skel" style={{ display: "inline-block", width: 52, height: 26 }} /> : count === null ? "—" : count.toLocaleString()}
+                </div>
+                <div className="rt-kpi-label">{pluralize(m.label)}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: formModules.length ? "minmax(0, 1.5fr) minmax(280px, 1fr)" : "1fr", gap: 16, marginTop: 22, alignItems: "start" }}>
+          <div className="rt-card">
+            <div className="rt-card-head">
+              <div style={{ flex: 1 }}>
+                <div className="rt-card-title">Records by module</div>
+                <div className="rt-card-sub">How your data is spread across {detail.name}</div>
+              </div>
+              <BarChart3 size={18} style={{ color: "#94a3b8" }} />
+            </div>
+            <div style={{ padding: "8px 20px 16px" }}>
+              {modules.map((m, i) => (
+                <button key={m.key} onClick={() => openElement(m.screenEl)} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "11px 0", border: "none", borderBottom: i === modules.length - 1 ? "none" : "1px solid var(--rt-border)", background: "none", cursor: "pointer", textAlign: "left", color: "inherit" }}>
+                  <ModuleIcon entity={m.key} icon={m.icon} size={16} style={{ color: "var(--rt-muted)" }} />
+                  <span style={{ width: 150, fontSize: 13.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pluralize(m.label)}</span>
+                  <span className="rt-bar" style={{ flex: 1 }}><span style={{ width: `${(counts[i] / maxCount) * 100}%` }} /></span>
+                  <span style={{ width: 48, textAlign: "right", fontSize: 13.5, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{typeof moduleCounts[m.key] === "number" ? moduleCounts[m.key].toLocaleString() : "…"}</span>
+                </button>
               ))}
+            </div>
+          </div>
+          {formModules.length > 0 && (
+            <div className="rt-card">
+              <div className="rt-card-head">
+                <div style={{ flex: 1 }}>
+                  <div className="rt-card-title">Quick actions</div>
+                  <div className="rt-card-sub">Jump straight into common tasks</div>
+                </div>
+                <Zap size={18} style={{ color: "#94a3b8" }} />
+              </div>
+              <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+                {formModules.slice(0, 6).map((m) => (
+                  <button key={m.key} className="rt-quick" onClick={() => openElement(m.formScreenEl)}>
+                    <span style={{ width: 34, height: 34, borderRadius: 9, background: "var(--rt-primary-soft)", color: "var(--rt-primary)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <ModuleIcon entity={m.key} icon={m.icon} size={16} />
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: 13.5, fontWeight: 600 }}>New {m.label.toLowerCase()}</span>
+                      <span style={{ display: "block", fontSize: 12, color: "var(--rt-muted)", marginTop: 1 }}>Add a record to {pluralize(m.label).toLowerCase()}</span>
+                    </span>
+                    <Plus size={16} style={{ color: "var(--rt-muted)" }} />
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -1330,10 +1525,9 @@ export default function RuntimeEngine() {
     );
   }
 
-  // Full-screen "use the real app" mode — a persistent AppBar + a left nav grouped by entity
-  // (buildAppModules), filling the whole viewport rather than sitting inside the Studio's own
-  // padded two-column card layout. This is what "look like a real app, desktop, full screen"
-  // means: a running application has its own shell, not a schema browser you click into.
+  // Full-screen "use the real app" mode. A thin dark builder bar on top (Studio chrome: back to
+  // the Studio, Ask, Fix/Update) is kept visually separate from the app itself, which fills the
+  // rest of the viewport with its own sidebar, top bar and pages.
   if (runMode && detail) {
     const modules = buildAppModules(detail, loggedInRole);
     const groupOrder = [...new Set(modules.map((m) => m.group))];
@@ -1341,93 +1535,34 @@ export default function RuntimeEngine() {
       ? modules.filter((m) => m.label.toLowerCase().includes(navSearch.trim().toLowerCase()))
       : modules;
     const identity = accountEntityEl && loggedIn ? loggedInIdentity : (user?.email || detail.name);
-    const identitySubtitle = accountEntityEl && loggedIn ? "Signed in" : "Workspace owner";
+    const identitySubtitle = accountEntityEl && loggedIn ? (loggedInRole || "Signed in") : "Workspace owner";
+    const showAuthLayout = activeElement && screenForRun && !screenForRun.grid && AUTH_SCREEN_NAMES.has(activeElement.name)
+      && (needsLoginGate || (activeElement.name === "ChangePassword" && mustChangePassword));
+    const activeModule = screenForRun?.entity ? modules.find((m) => m.key === screenForRun.entity) : null;
+    const [idBg, idFg] = avatarColors(identity);
     return (
-      <div style={{ position: "fixed", inset: 0, zIndex: 100, background: theme.background, display: "flex", flexDirection: "column", fontFamily: theme.fontFamily }}>
-        <div className="studio-root" style={{ background: "var(--st-surface)", borderBottom: "1px solid var(--st-border)", padding: "10px 20px", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-          <button onClick={exitRunMode} className="studio-btn-secondary studio-btn-sm" title="Back to the Studio workspace"><ArrowLeft size={14} /> Studio</button>
-          <button
-            onClick={() => setSidebarCollapsed((c) => !c)}
-            title={sidebarCollapsed ? "Expand menu" : "Collapse menu"}
-            className="studio-icon-btn"
-          >
-            <Menu size={16} />
-          </button>
-          {theme.logo ? (
-            <img src={theme.logo} alt="" style={{ height: 26, display: "block", flexShrink: 0 }} onError={(e) => { e.target.style.display = "none"; }} />
-          ) : (
-            <div style={{ width: 30, height: 30, borderRadius: 8, background: theme.primary, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 700, fontSize: 13, flexShrink: 0 }}>
-              {(detail.name || "?").charAt(0).toUpperCase()}
-            </div>
-          )}
-          <div style={{ fontWeight: 700, fontSize: "1.02em", color: "var(--st-text)", whiteSpace: "nowrap" }}>{detail.name}</div>
-          <div style={{ flex: 1, maxWidth: 420, marginLeft: 16, position: "relative" }}>
-            <Search size={14} style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", color: "var(--st-muted)", pointerEvents: "none" }} />
-            <input
-              value={navSearch}
-              onChange={(e) => setNavSearch(e.target.value)}
-              placeholder="Search modules…"
-              className="studio-input"
-              style={{ width: "100%", paddingLeft: 30, fontSize: 13 }}
-            />
-          </div>
+      <div className={rtClass} style={{ ...rtVars, position: "fixed", inset: 0, zIndex: 100, display: "flex", flexDirection: "column" }}>
+        <div className="rt-builder-bar">
+          <button onClick={exitRunMode} title="Back to the Studio workspace"><ArrowLeft size={14} /> Studio</button>
+          <span style={{ width: 1, height: 18, background: "#2a3042" }} />
+          <span className="rt-live-dot" />
+          <span>Live preview</span>
+          <span style={{ color: "#5d657b" }}>·</span>
+          <span style={{ color: "#e8eaf2", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{detail.name}</span>
           <div style={{ flex: 1 }} />
-          <div style={{ position: "relative" }}>
-            <button
-              onClick={() => setShowNotifications((v) => !v)}
-              title="Notifications"
-              className="studio-icon-btn"
-            >
-              <Bell size={16} />
-            </button>
-            {showNotifications && (
-              <div
-                className="studio-card"
-                style={{ position: "absolute", right: 0, top: 40, width: 220, padding: 14, fontSize: 12.5, color: "var(--st-muted)", zIndex: 10 }}
-                onMouseLeave={() => setShowNotifications(false)}
-              >
-                You're all caught up — no new notifications.
-              </div>
-            )}
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 9, paddingLeft: 12, borderLeft: "1px solid var(--st-border)" }}>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: theme.primary, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 12.5, flexShrink: 0 }}>
-              {initialsFor(identity)}
-            </div>
-            <div style={{ lineHeight: 1.25 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--st-text)" }}>{identity}</div>
-              {accountEntityEl && loggedIn ? (
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button
-                    onClick={() => {
-                      const cp = detail.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
-                      if (cp) openElement(cp); else setError("No ChangePassword screen found.");
-                    }}
-                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: "var(--st-accent)" }}
-                  >
-                    Change password
-                  </button>
-                  <button onClick={handleLogout} disabled={loggingOut} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: 11, color: "var(--st-danger)" }}>
-                    {loggingOut ? "Logging out…" : "Logout"}
-                  </button>
-                </div>
-              ) : (
-                <div style={{ fontSize: 11, color: "var(--st-muted)" }}>{identitySubtitle}</div>
-              )}
-            </div>
-          </div>
+          <button onClick={() => setShowAskDrawer(true)} title="Ask anything about this application's setup"><MessageSquareText size={14} /> Ask</button>
+          <button className="bb-ai" onClick={() => setShowFixModal(true)} title="Fix or update this application"><Wrench size={14} /> Fix / Update</button>
         </div>
+
         {showFixModal && (
           // className="studio-root" here is load-bearing, not decorative: every --st-* color
           // variable the studio-card/studio-btn-*/studio-textarea classes below depend on is only
           // ever DEFINED on an element with this class (see styles.css) — Run mode's own root never
-          // carries it (its content renders the APP's own theme, not the Studio's), so without this
-          // wrapper the modal's background/border/button colors all silently fail to resolve,
-          // which is exactly why it read as "not clearly visible."
-          <div className="studio-root" style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200 }} onClick={() => setShowFixModal(false)}>
-            <div className="studio-card" style={{ width: 560, padding: 24, maxHeight: "85vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+          // carries it (its content renders the APP's own theme, not the Studio's).
+          <div className="studio-root" style={{ position: "fixed", inset: 0, background: "rgba(5,6,10,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 220 }} onClick={() => setShowFixModal(false)}>
+            <div className="studio-card" style={{ width: 560, padding: 24, maxHeight: "85vh", overflowY: "auto", colorScheme: "dark" }} onClick={(e) => e.stopPropagation()}>
               <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4, color: "var(--st-text)" }}>Fix or update this application</div>
-              <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 16 }}>
+              <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 16, lineHeight: 1.55 }}>
                 Describe what's wrong or what should change — a screen behaving oddly, a validation
                 that's too strict, a field that should be there and isn't. Only the specific thing
                 you describe gets touched — every other screen, entity, and all your existing data
@@ -1447,7 +1582,7 @@ export default function RuntimeEngine() {
               {genError && <div style={{ color: "var(--st-danger)", fontSize: 12.5, marginTop: 8 }}>{genError}</div>}
               {pendingXml && (
                 <div style={{ marginTop: 16 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Review before applying:</div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: "var(--st-text)" }}>Review before applying:</div>
                   <pre className="code-block" style={{ maxHeight: "35vh" }}>{pendingXml}</pre>
                   <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
                     <button className="studio-btn-ai" onClick={handleApplyDescription} disabled={applying}>
@@ -1463,173 +1598,144 @@ export default function RuntimeEngine() {
             </div>
           </div>
         )}
-        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-          {!needsLoginGate && (
-            // Same --st-* scoping reason as the Fix modal/Dashboard above. Grouped like a real
-            // enterprise app's nav (People/Time/Finance/…, see groupForEntity) rather than one flat
-            // list, with a collapse toggle and a live filter fed by the top bar's search box.
-            <div className="studio-root" style={{ width: sidebarCollapsed ? 64 : 220, borderRight: "1px solid var(--st-border)", padding: sidebarCollapsed ? "14px 8px" : 14, overflowY: "auto", background: "var(--st-surface)", flexShrink: 0, display: "flex", flexDirection: "column", transition: "width 0.15s" }}>
-              <div style={{ flex: 1 }}>
-                <div
-                  onClick={() => setActiveElement(null)}
-                  title="Dashboard"
-                  style={{
-                    padding: sidebarCollapsed ? "9px 0" : "9px 12px", borderRadius: 6, cursor: "pointer", marginBottom: 10, fontSize: 13.5,
-                    fontWeight: !activeElement ? 700 : 500, background: !activeElement ? `${theme.primary}1a` : "transparent", color: !activeElement ? theme.primary : "var(--st-text)",
-                    borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
-                    display: "flex", alignItems: "center", gap: 8, justifyContent: sidebarCollapsed ? "center" : "flex-start",
-                  }}
-                >
-                  <LayoutDashboard size={17} strokeWidth={1.75} style={{ flexShrink: 0 }} />
-                  {!sidebarCollapsed && "Dashboard"}
-                </div>
+
+        {showAuthLayout ? renderFormScreen(true) : (
+          <div className="rt-shell">
+            <aside className={`rt-sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
+              <div className="rt-brand">
+                {theme.logo
+                  ? <img src={theme.logo} alt="" style={{ height: 30, maxWidth: sidebarCollapsed ? 36 : 140, objectFit: "contain" }} onError={(e) => { e.target.style.display = "none"; }} />
+                  : <div className="rt-logo">{detail.name.charAt(0).toUpperCase()}</div>}
+                {!sidebarCollapsed && (
+                  <div style={{ minWidth: 0 }}>
+                    <div className="rt-brand-name">{detail.name}</div>
+                    <div className="rt-brand-sub">Workspace</div>
+                  </div>
+                )}
+              </div>
+              <nav className="rt-nav">
+                <button className={`rt-nav-item${!activeElement ? " active" : ""}`} onClick={() => setActiveElement(null)} title="Dashboard">
+                  <LayoutDashboard size={18} strokeWidth={1.8} /> {!sidebarCollapsed && "Dashboard"}
+                </button>
                 {groupOrder.map((group) => {
                   const items = filteredModules.filter((m) => m.group === group);
                   if (items.length === 0) return null;
                   return (
-                    <div key={group} style={{ marginTop: 14 }}>
-                      {!sidebarCollapsed && (
-                        <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", color: "var(--st-muted)", textTransform: "uppercase", padding: "0 12px", marginBottom: 6 }}>
-                          {group}
-                        </div>
-                      )}
+                    <div key={group}>
+                      {!sidebarCollapsed ? <div className="rt-nav-label">{group}</div> : <div style={{ height: 1, background: "var(--rt-border)", margin: "12px 8px" }} />}
                       {items.map((m) => {
-                        const active = screenForRun?.entity === m.key;
+                        const active = screenForRun?.entity === m.key && !!activeElement;
+                        const count = moduleCounts[m.key];
                         return (
-                          <div
-                            key={m.key}
-                            onClick={() => openElement(m.screenEl)}
-                            title={m.label}
-                            style={{
-                              padding: sidebarCollapsed ? "9px 0" : "9px 12px", borderRadius: 6, cursor: "pointer", marginBottom: 2, fontSize: 13.5,
-                              fontWeight: active ? 700 : 500, background: active ? `${theme.primary}1a` : "transparent", color: active ? theme.primary : "var(--st-text)",
-                              display: "flex", alignItems: "center", gap: 8, justifyContent: sidebarCollapsed ? "center" : "flex-start",
-                            }}
-                          >
-                            <ModuleIcon entity={m.key} icon={m.icon} style={{ color: active ? theme.primary : "var(--st-muted)", flexShrink: 0 }} />
-                            {!sidebarCollapsed && m.label}
-                          </div>
+                          <button key={m.key} className={`rt-nav-item${active ? " active" : ""}`} onClick={() => openElement(m.screenEl)} title={pluralize(m.label)}>
+                            <ModuleIcon entity={m.key} icon={m.icon} size={18} />
+                            {!sidebarCollapsed && <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pluralize(m.label)}</span>}
+                            {!sidebarCollapsed && typeof count === "number" && <span className="rt-nav-count">{count}</span>}
+                          </button>
                         );
                       })}
                     </div>
                   );
                 })}
                 {navSearch.trim() && filteredModules.length === 0 && !sidebarCollapsed && (
-                  <div style={{ fontSize: 12, color: "var(--st-muted)", padding: "10px 12px" }}>No modules match "{navSearch}".</div>
+                  <div style={{ fontSize: 12.5, color: "var(--rt-muted)", padding: "10px 12px" }}>No modules match "{navSearch}".</div>
                 )}
+              </nav>
+              <div className="rt-sidebar-foot">
+                <button className="rt-nav-item" onClick={() => setSidebarCollapsed((c) => !c)} title={sidebarCollapsed ? "Expand menu" : "Collapse menu"} style={{ marginBottom: 0 }}>
+                  {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />} {!sidebarCollapsed && "Collapse"}
+                </button>
               </div>
-              <div style={{ borderTop: "1px solid var(--st-border)", paddingTop: 10, fontSize: 11, color: "var(--st-muted)", display: "flex", alignItems: "center", gap: 6, justifyContent: sidebarCollapsed ? "center" : "flex-start" }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} />
-                {!sidebarCollapsed && "All Systems Normal"}
-              </div>
-            </div>
-          )}
-          <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
-            {!activeElement && !needsLoginGate && (
-              // Same reason as the Fix modal above: studio-card and the --st-text/--st-muted
-              // variables used directly below only resolve inside a .studio-root-classed subtree.
-              <div className="studio-root">
-                <div
-                  style={{
-                    background: `linear-gradient(135deg, ${theme.primary} 0%, ${theme.accent} 100%)`,
-                    borderRadius: 14, padding: "26px 28px", marginBottom: 22, color: "#fff",
-                    boxShadow: `0 8px 24px ${theme.primary}33`,
-                  }}
-                >
-                  <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 6 }}>
-                    {new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-                  </div>
-                  <div style={{ fontSize: "1.5em", fontWeight: 800, marginBottom: 6 }}>
-                    {greetingForHour(new Date().getHours())}, {displayNameFor(accountEntityEl && loggedIn ? loggedInIdentity : user?.email)} 👋
-                  </div>
-                  <div style={{ fontSize: 13, opacity: 0.9, marginBottom: modules.some((m) => m.formScreenEl) ? 18 : 0, maxWidth: 560 }}>
-                    Here's what's happening across {detail.name} today.
-                  </div>
-                  {modules.some((m) => m.formScreenEl) && (
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      {modules.filter((m) => m.formScreenEl).slice(0, 3).map((m) => (
-                        <button
-                          key={m.key}
-                          onClick={() => openElement(m.formScreenEl)}
-                          style={{
-                            background: "rgba(255,255,255,0.18)", border: "1px solid rgba(255,255,255,0.35)", color: "#fff",
-                            borderRadius: 999, padding: "8px 16px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-                            display: "flex", alignItems: "center", gap: 6,
-                          }}
-                        >
-                          <ModuleIcon entity={m.key} icon={m.icon} size={15} style={{ color: "#fff", flexShrink: 0 }} /> New {m.label}
-                        </button>
-                      ))}
+            </aside>
+
+            <div className="rt-main">
+              <header className="rt-topbar">
+                <div className="rt-crumbs">
+                  <button onClick={() => setActiveElement(null)}>{detail.name}</button>
+                  {activeModule && (
+                    <>
+                      <ChevronRight size={14} />
+                      {screenForRun?.grid
+                        ? <span className="current">{pluralize(activeModule.label)}</span>
+                        : <button onClick={() => openElement(activeModule.screenEl)}>{pluralize(activeModule.label)}</button>}
+                    </>
+                  )}
+                  {activeElement && screenForRun && !screenForRun.grid && (
+                    <>
+                      <ChevronRight size={14} />
+                      <span className="current">{activeElement.name === "ChangePassword" ? "Change password" : runFieldValues[screenKeyField] ? "Edit" : "New"}</span>
+                    </>
+                  )}
+                  {!activeElement && (<><ChevronRight size={14} /><span className="current">Dashboard</span></>)}
+                </div>
+                <div style={{ flex: 1 }} />
+                <div className="rt-search">
+                  <Search size={15} />
+                  <input className="rt-input" value={navSearch} onChange={(e) => setNavSearch(e.target.value)} placeholder="Search modules…" />
+                </div>
+                <div style={{ position: "relative" }}>
+                  <button className="rt-icon-btn" onClick={() => { setShowNotifications((v) => !v); setShowUserMenu(false); }} title="Notifications"><Bell size={18} /></button>
+                  {showNotifications && (
+                    <div className="rt-menu" style={{ right: 0, top: 44, width: 280, padding: 18, textAlign: "center" }} onMouseLeave={() => setShowNotifications(false)}>
+                      <div className="rt-empty-icon" style={{ width: 44, height: 44, borderRadius: 12, marginBottom: 10 }}><Bell size={20} /></div>
+                      <div style={{ fontWeight: 600, fontSize: 13.5 }}>You're all caught up</div>
+                      <div style={{ fontSize: 12.5, color: "var(--rt-muted)", marginTop: 3 }}>No new notifications right now.</div>
                     </div>
                   )}
                 </div>
-                <div style={{ fontWeight: 700, fontSize: "1.05em", color: "var(--st-text)", marginBottom: 14 }}>Modules</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 16 }}>
-                  {modules.map((m) => {
-                    const count = moduleCounts[m.key];
-                    return (
-                      <div
-                        key={m.key}
-                        className="studio-card"
-                        onClick={() => openElement(m.screenEl)}
-                        style={{ padding: 18, cursor: "pointer", transition: "transform 0.12s, box-shadow 0.12s" }}
-                        onMouseEnter={(e) => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 4px 14px rgba(0,0,0,0.12)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.05em", color: "var(--st-muted)", textTransform: "uppercase" }}>{m.label}</div>
-                          <div style={{ width: 32, height: 32, borderRadius: 8, background: `${theme.primary}1f`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                            <ModuleIcon entity={m.key} icon={m.icon} style={{ color: theme.primary }} />
-                          </div>
-                        </div>
-                        <div style={{ fontSize: "1.8em", fontWeight: 800, color: "var(--st-text)", marginTop: 10 }}>
-                          {count === "loading" ? "…" : count === null ? "—" : count}
-                        </div>
-                        <div style={{ fontSize: 12, color: "var(--st-muted)", marginTop: 2 }}>records</div>
+                <div style={{ position: "relative" }}>
+                  <button onClick={() => { setShowUserMenu((v) => !v); setShowNotifications(false); }}
+                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 4px 4px", border: "1px solid var(--rt-border)", borderRadius: 999, background: "var(--rt-surface)", cursor: "pointer" }}>
+                    <span className="rt-avatar" style={{ width: 32, height: 32, background: idBg, color: idFg }}>{initialsFor(identity)}</span>
+                    <span style={{ textAlign: "left", lineHeight: 1.2 }}>
+                      <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--rt-text)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayNameFor(identity)}</span>
+                      <span style={{ display: "block", fontSize: 11.5, color: "var(--rt-muted)" }}>{identitySubtitle}</span>
+                    </span>
+                    <ChevronDown size={14} style={{ color: "var(--rt-muted)" }} />
+                  </button>
+                  {showUserMenu && (
+                    <div className="rt-menu" style={{ right: 0, top: 48 }} onMouseLeave={() => setShowUserMenu(false)}>
+                      <div style={{ padding: "8px 10px 10px", borderBottom: "1px solid var(--rt-border)", marginBottom: 4 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameFor(identity)}</div>
+                        <div style={{ fontSize: 12, color: "var(--rt-muted)", overflow: "hidden", textOverflow: "ellipsis" }}>{identity}</div>
                       </div>
-                    );
-                  })}
+                      {accountEntityEl && loggedIn ? (
+                        <>
+                          <button onClick={() => {
+                            setShowUserMenu(false);
+                            const cp = detail.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
+                            if (cp) openElement(cp); else setError("No ChangePassword screen found.");
+                          }}><KeyRound size={15} /> Change password</button>
+                          <button className="danger" onClick={() => { setShowUserMenu(false); handleLogout(); }} disabled={loggingOut}><LogOut size={15} /> {loggingOut ? "Signing out…" : "Sign out"}</button>
+                        </>
+                      ) : (
+                        <div style={{ padding: "6px 10px 8px", fontSize: 12, color: "var(--rt-muted)" }}>This app has no user accounts — you're previewing it as the owner.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </header>
+              <div className="rt-content">
+                <div className="rt-page">
+                  {error && (
+                    <div className="rt-alert error" style={{ marginBottom: 16, alignItems: "center" }}>
+                      <AlertCircle size={16} /><span style={{ flex: 1 }}>{error}</span>
+                      <button className="rt-icon-btn sm" onClick={() => setError("")}><XIcon size={14} /></button>
+                    </div>
+                  )}
+                  {!activeElement && renderAppDashboard(modules)}
+                  {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && renderGridScreen(true)}
+                  {activeElement && activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && renderFormScreen(true)}
                 </div>
               </div>
-            )}
-            {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && renderGridScreen(true)}
-            {activeElement && activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && renderFormScreen(true)}
-          </div>
-        </div>
-        {/* A floating button, not another item crammed into the already-busy top bar (where it
-            was easy to miss among Exit/logo/name/account controls) — always in the same
-            unmistakable spot regardless of how much else is in the bar. */}
-        {!needsLoginGate && !showAskDrawer && (
-          <div style={{ position: "fixed", bottom: 28, right: 28, zIndex: 150, display: "flex", gap: 10 }}>
-            <button
-              onClick={() => setShowAskDrawer(true)}
-              title="Ask anything about this application's setup"
-              style={{
-                background: "#131722", color: "#fff", border: "1px solid #2f3750", borderRadius: 999,
-                padding: "12px 18px", fontSize: 14, fontWeight: 600, fontFamily: "Inter, system-ui, sans-serif",
-                cursor: "pointer", boxShadow: "0 6px 20px rgba(0,0,0,0.35)", display: "flex", alignItems: "center", gap: 8,
-              }}
-            >
-              <MessageSquareText size={16} /> Ask
-            </button>
-            <button
-              onClick={() => setShowFixModal(true)}
-              title="Fix or update this application"
-              style={{
-                background: theme.accent, color: "#fff", border: "none", borderRadius: 999,
-                padding: "12px 20px", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-                cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
-                display: "flex", alignItems: "center", gap: 8,
-              }}
-            >
-              <Wrench size={16} /> Fix / Update
-            </button>
+            </div>
           </div>
         )}
+
         {/* The Ask slide-over — same panel as the Studio's Ask section, so a question that comes
             up while actually using the app ("why won't this save?") can be answered in place. */}
         {showAskDrawer && (
-          <div className="studio-root" style={{ position: "fixed", inset: 0, zIndex: 210, display: "flex", justifyContent: "flex-end", background: "rgba(5,6,10,0.45)" }} onClick={() => setShowAskDrawer(false)}>
+          <div className="studio-root" style={{ position: "fixed", inset: 0, zIndex: 210, display: "flex", justifyContent: "flex-end", background: "rgba(5,6,10,0.45)", colorScheme: "dark" }} onClick={() => setShowAskDrawer(false)}>
             <div className="fade-in" style={{ width: 460, maxWidth: "100%", height: "100%", background: "var(--bg-elev)", borderLeft: "1px solid var(--border)", boxShadow: "-20px 0 50px -20px rgba(0,0,0,0.6)" }} onClick={(e) => e.stopPropagation()}>
               <AskPanel applicationId={selectedId} detail={detail} variant="drawer" onClose={() => setShowAskDrawer(false)} />
             </div>
