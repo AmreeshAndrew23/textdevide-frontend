@@ -32,7 +32,51 @@
   --radius-sm: 8px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
   --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  --faint: #5d657b;
+  --code-bg: #080a10;
+  --code-text: #d7dcef;
+  --md-code: #d6ccff;
+  --scroll: #262d40;
+  --scroll-hover: #343c55;
+  --overlay: rgba(5, 6, 10, 0.7);
   color-scheme: dark;
+}
+
+/* ===== Light mode — soft, low-glare greys instead of bright white: the page is a cool light
+   grey, cards are an off-white one step lighter, never #fff. Same token names, so every Studio
+   page switches with no per-page code. Set by utils/studioTheme.js via <html data-theme>. ===== */
+:root[data-theme="light"] {
+  --bg: #e9ecf1;
+  --bg-elev: #e2e6ed;
+  --surface: #f3f4f7;
+  --surface-2: #eaedf2;
+  --surface-3: #dfe3ea;
+  --border: #d5dae3;
+  --border-strong: #c3c9d5;
+  --text: #1b2030;
+  --text-2: #424a5e;
+  --muted: #687086;
+  --accent: #6a58e6;
+  --accent-hover: #5946d4;
+  --accent-soft: rgba(106, 88, 230, 0.11);
+  --accent-ring: rgba(106, 88, 230, 0.22);
+  --success: #05875f;
+  --success-soft: rgba(5, 150, 105, 0.11);
+  --warning: #b45309;
+  --warning-soft: rgba(217, 119, 6, 0.11);
+  --danger: #d03030;
+  --danger-soft: rgba(220, 38, 38, 0.09);
+  --ai-gradient: linear-gradient(135deg, #7564ef 0%, #5b7cf5 55%, #22b8d6 100%);
+  --ai-glow: 0 10px 26px -12px rgba(106, 88, 230, 0.5);
+  --shadow: 0 1px 2px rgba(27, 32, 48, 0.06), 0 8px 22px -14px rgba(27, 32, 48, 0.18);
+  --faint: #8a91a5;
+  --code-bg: #e4e8ef;
+  --code-text: #232a3b;
+  --md-code: #5340c9;
+  --scroll: #c5cbd6;
+  --scroll-hover: #aab2c1;
+  --overlay: rgba(40, 46, 62, 0.42);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -51,7 +95,7 @@ input:focus, textarea:focus, select:focus {
   box-shadow: 0 0 0 3px var(--accent-ring) !important;
   outline: none;
 }
-input::placeholder, textarea::placeholder { color: #5d657b; }
+input::placeholder, textarea::placeholder { color: var(--faint); }
 
 .sidebar-item:hover { background: var(--surface-2) !important; }
 .sub-nav-item:hover { background: var(--accent-soft) !important; }
@@ -84,7 +128,7 @@ input::placeholder, textarea::placeholder { color: #5d657b; }
 .fade-in { animation: fadeIn 0.22s ease both; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
-.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.18); border-top-color: currentColor; border-radius: 50%; animation: spin 0.6s linear infinite; flex-shrink: 0; }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid color-mix(in srgb, currentColor 22%, transparent); border-top-color: currentColor; border-radius: 50%; animation: spin 0.6s linear infinite; flex-shrink: 0; }
 
 @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
 .skeleton { border-radius: 6px; background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%); background-size: 800px 100%; animation: shimmer 1.4s linear infinite; }
@@ -99,8 +143,8 @@ input::placeholder, textarea::placeholder { color: #5d657b; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #262d40; border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: #343c55; background-clip: padding-box; border: 2px solid transparent; }
+::-webkit-scrollbar-thumb { background: var(--scroll); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-hover); background-clip: padding-box; border: 2px solid transparent; }
 
 /* ===== Studio scope — every --st-* name the pages already use, now aliased to the tokens above
    so Domains/Admin/the Runtime Engine pick up the new palette without per-page changes. ===== */
@@ -172,8 +216,8 @@ input::placeholder, textarea::placeholder { color: #5d657b; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
 .nav-item.active svg { color: var(--accent); }
 .nav-item .nav-count { margin-left: auto; font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 999px; padding: 1px 7px; font-weight: 600; }
-.nav-item.active .nav-count { background: rgba(139, 124, 248, 0.2); color: var(--accent); }
-.nav-group-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #5d657b; padding: 0 10px; margin: 18px 0 6px; }
+.nav-item.active .nav-count { background: var(--accent-soft); color: var(--accent); }
+.nav-group-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); padding: 0 10px; margin: 18px 0 6px; }
 
 .section-title { font-size: 20px; font-weight: 700; margin: 0; letter-spacing: -0.01em; }
 .section-sub { font-size: 13.5px; color: var(--muted); margin: 6px 0 0; line-height: 1.55; max-width: 680px; }
@@ -186,7 +230,7 @@ input::placeholder, textarea::placeholder { color: #5d657b; }
 .table-wrap { border: 1px solid var(--border); border-radius: 10px; overflow: auto; background: var(--surface); }
 
 .code-block {
-  background: #080a10; color: #d7dcef; border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin: 0;
+  background: var(--code-bg); color: var(--code-text); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin: 0;
   overflow: auto; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
 }
 
@@ -222,8 +266,11 @@ input::placeholder, textarea::placeholder { color: #5d657b; }
 .md ul, .md ol { margin: 0 0 10px; padding-left: 20px; }
 .md li { margin: 3px 0; }
 .md li::marker { color: var(--accent); }
-.md code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-3); color: #d6ccff; padding: 1px 6px; border-radius: 5px; }
+.md code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-3); color: var(--md-code); padding: 1px 6px; border-radius: 5px; }
 .md pre { margin: 0 0 10px; }
 .md pre code { background: none; padding: 0; color: inherit; }
 .md .table-wrap { margin: 4px 0 12px; }
 .md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+/* Theme switch — smooth the swap instead of a hard flash. */
+html.theme-switching, html.theme-switching * { transition: background-color 0.25s ease, border-color 0.25s ease, color 0.2s ease !important; }

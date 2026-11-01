@@ -6,8 +6,9 @@
    Everything else (tints, hovers, rings) is derived from them with color-mix(), so any brand
    color the AI picks produces a coherent palette. ===== */
 .rt-app {
-  --rt-canvas: color-mix(in srgb, var(--rt-bg) 93%, #0f172a 7%);
-  --rt-surface: var(--rt-bg);
+  /* Soft, not bright: the page and the cards are both tinted a touch off pure white. */
+  --rt-canvas: color-mix(in srgb, var(--rt-bg) 91%, #1e293b 9%);
+  --rt-surface: color-mix(in srgb, var(--rt-bg) 95%, #94a3b8 5%);
   --rt-border: color-mix(in srgb, var(--rt-bg) 88%, #0f172a 12%);
   --rt-border-strong: color-mix(in srgb, var(--rt-bg) 80%, #0f172a 20%);
   --rt-text: #0f172a;

@@ -5,6 +5,7 @@ import api, { API_ORIGIN } from "../api/client";
 import { ERDiagram } from "../components/ERDiagram";
 import AskPanel from "../components/AskPanel";
 import { BrandMark } from "../components/StudioLayout";
+import ThemeToggle from "../components/ThemeToggle";
 import { useAuth } from "../context/AuthContext";
 import {
   parseScreenForRun, parseEntityForRun, parseRelationshipForRun, parseDataSourceForRun, parseValidationForRun,
@@ -2007,7 +2008,7 @@ export default function RuntimeEngine() {
             style={{ width: "auto", maxWidth: 260, background: "transparent", border: "1px solid transparent", fontWeight: 700, fontSize: 14.5, padding: "6px 28px 6px 8px", appearance: "none", cursor: "pointer" }}
           >
             {!applications?.some((a) => a.id === selectedId) && <option value={selectedId || ""}>{detail?.name || "Loading…"}</option>}
-            {(applications || []).map((a) => <option key={a.id} value={a.id} style={{ background: "#131722" }}>{a.name}</option>)}
+            {(applications || []).map((a) => <option key={a.id} value={a.id} style={{ background: "var(--surface)", color: "var(--text)" }}>{a.name}</option>)}
           </select>
           <ChevronDown size={14} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", pointerEvents: "none" }} />
         </div>
@@ -2020,7 +2021,7 @@ export default function RuntimeEngine() {
               const current = i === stepIndex;
               return (
                 <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  {i > 0 && <ChevronRight size={14} style={{ color: "#3c445c" }} />}
+                  {i > 0 && <ChevronRight size={14} style={{ color: "var(--border-strong)" }} />}
                   <button
                     onClick={s.onClick}
                     style={{
@@ -2043,6 +2044,7 @@ export default function RuntimeEngine() {
           </div>
         </div>
 
+        <ThemeToggle />
         <button className="studio-btn-ghost studio-btn-sm" onClick={() => detail && downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail))} disabled={!detail || isEmptyApp} title="Download the application XML">
           <Download size={14} /> XML
         </button>
@@ -2123,7 +2125,7 @@ export default function RuntimeEngine() {
               ) : (
                 <div className="fade-in">
                   {/* Hero */}
-                  <div style={{ position: "relative", overflow: "hidden", borderRadius: 16, border: "1px solid var(--border)", background: "radial-gradient(120% 140% at 0% 0%, rgba(139,124,248,0.18) 0%, rgba(19,23,34,0) 55%), radial-gradient(90% 120% at 100% 100%, rgba(56,214,240,0.10) 0%, rgba(19,23,34,0) 60%), var(--surface)", padding: "26px 28px", display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
+                  <div style={{ position: "relative", overflow: "hidden", borderRadius: 16, border: "1px solid var(--border)", background: "radial-gradient(120% 140% at 0% 0%, rgba(139,124,248,0.18) 0%, rgba(139,124,248,0) 55%), radial-gradient(90% 120% at 100% 100%, rgba(56,214,240,0.10) 0%, rgba(56,214,240,0) 60%), var(--surface)", padding: "26px 28px", display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
                     <div style={{ width: 56, height: 56, borderRadius: 14, background: theme.primary, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 22, flexShrink: 0, boxShadow: `0 10px 26px -10px ${theme.primary}` }}>
                       {detail.name.charAt(0).toUpperCase()}
                     </div>

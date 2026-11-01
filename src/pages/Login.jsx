@@ -4,6 +4,7 @@ import { GoogleLogin } from "@react-oauth/google";
 import { Sparkles, Boxes, MessageSquareText, Play } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { BrandMark } from "../components/StudioLayout";
+import ThemeToggle from "../components/ThemeToggle";
 import api from "../api/client";
 
 // Split layout: what the product does on the left (the Describe → Ask → Run flow), the sign-in
@@ -90,6 +91,7 @@ export default function Login() {
       </div>
 
       <div style={styles.formSide}>
+        <div style={{ position: "absolute", top: 20, right: 20 }}><ThemeToggle /></div>
         <div className="fade-in" style={styles.card}>
           <h2 style={styles.title}>{isRegister ? "Create your account" : "Welcome back"}</h2>
           <p style={styles.subtitle}>
@@ -167,7 +169,7 @@ const styles = {
     justifyContent: "space-between",
     padding: "40px 56px",
     borderRight: "1px solid var(--border)",
-    background: "radial-gradient(90% 70% at 0% 0%, rgba(139,124,248,0.20) 0%, rgba(10,12,18,0) 60%), radial-gradient(70% 60% at 100% 100%, rgba(56,214,240,0.10) 0%, rgba(10,12,18,0) 60%), var(--bg-elev)",
+    background: "radial-gradient(90% 70% at 0% 0%, rgba(139,124,248,0.20) 0%, rgba(139,124,248,0) 60%), radial-gradient(70% 60% at 100% 100%, rgba(56,214,240,0.10) 0%, rgba(56,214,240,0) 60%), var(--bg-elev)",
   },
   formSide: {
     flex: "1 1 50%",
@@ -175,6 +177,7 @@ const styles = {
     alignItems: "center",
     justifyContent: "center",
     padding: "40px 24px",
+    position: "relative",
   },
   card: {
     width: "100%",

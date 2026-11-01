@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Sparkles, LayoutGrid, Library, Coins, Settings, LogOut, X as XIcon } from "lucide-react";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
+import ThemeToggle from "./ThemeToggle";
 
 // The Studio's own outer shell for top-level pages — brand, primary navigation, and the signed-in
 // account (settings, admin, log out) in one fixed left sidebar, so every top-level page reads as
@@ -33,7 +34,7 @@ function SettingsModal({ onClose }) {
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(5,6,10,0.7)", backdropFilter: "blur(4px)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
+    <div style={{ position: "fixed", inset: 0, background: "var(--overlay)", backdropFilter: "blur(4px)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
       <div className="studio-card fade-in" style={{ width: 440, maxWidth: "100%", padding: 24 }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", alignItems: "center", marginBottom: 18 }}>
           <div style={{ fontWeight: 700, fontSize: 17, flex: 1 }}>Settings</div>
@@ -91,6 +92,7 @@ export default function StudioLayout({ active, children }) {
               <div style={{ fontSize: 11.5, color: "var(--muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user?.email}</div>
             </div>
           </div>
+          <ThemeToggle variant="nav" />
           <button className="nav-item" onClick={() => setShowSettings(true)}><Settings size={16} strokeWidth={1.8} /> Settings</button>
           <button className="nav-item" onClick={logout}><LogOut size={16} strokeWidth={1.8} /> Log out</button>
         </div>
