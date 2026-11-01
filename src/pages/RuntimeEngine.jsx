@@ -20,7 +20,9 @@ import {
   Copy, Boxes, Monitor, GitBranch, ListChecks, Database, Zap, Palette, KeyRound, Hash, ChevronRight, Check,
   RotateCcw, Plus, Pencil, Trash2, CheckCircle2, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronUp,
   ArrowUpDown, Upload, Image as ImageIcon, LogOut, CalendarDays, ArrowUpRight, BarChart3, PanelLeftOpen, PanelLeftClose,
+  Wallet, PieChart,
 } from "lucide-react";
+import { buildInsights } from "../utils/dashboardInsights";
 import { pluralize, toneForValue, formatDate, formatNumber, displayText, avatarColors, toCsv } from "../utils/runtimeFormat";
 import "../runtimeApp.css";
 
@@ -369,6 +371,39 @@ function surfaceColorFor(background) {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 200 ? `#${hex}` : "#ffffff";
 }
 
+// Status-like values keep their meaning (red/amber/green); anything else gets a distinct palette
+// color by position, so a breakdown never shows two different values in the same color.
+const TONE_COLORS = { success: "#10b981", warning: "#f59e0b", danger: "#ef4444" };
+const BUCKET_PALETTE = ["#6366f1", "#0ea5e9", "#14b8a6", "#a855f7", "#f97316", "#ec4899", "#64748b", "#84cc16"];
+function bucketColor(bucket, index) {
+  return TONE_COLORS[bucket.tone] || BUCKET_PALETTE[index % BUCKET_PALETTE.length];
+}
+
+// A small SVG donut for one status breakdown — circles with dash offsets, no chart library.
+function Donut({ buckets, total, size = 132, stroke = 18 }) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const offsets = buckets.reduce((acc, b, i) => [...acc, i === 0 ? 0 : acc[i - 1] + (buckets[i - 1].count / total) * c], []);
+  return (
+    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--rt-canvas)" strokeWidth={stroke} />
+        {buckets.map((b, i) => {
+          const len = (b.count / total) * c;
+          return (
+            <circle key={b.value} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={bucketColor(b, i)} strokeWidth={stroke}
+              strokeDasharray={`${Math.max(len - 2, 0.5)} ${c}`} strokeDashoffset={-offsets[i]} />
+          );
+        })}
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em" }}>{total.toLocaleString()}</div>
+        <div style={{ fontSize: 11.5, color: "var(--rt-muted)" }}>total</div>
+      </div>
+    </div>
+  );
+}
+
 // GitHub's mark (lucide no longer ships brand icons).
 function GithubMark({ size = 16 }) {
   return (
@@ -448,7 +483,8 @@ export default function RuntimeEngine() {
   // not the Studio's raw per-tag element browser. Entered automatically once an application has
   // real content, since opening a project should show the app, not its schema.
   const [runMode, setRunMode] = useState(false);
-  const [moduleCounts, setModuleCounts] = useState({}); // entityName -> "loading" | number, for the Dashboard's stat cards
+  const [moduleCounts, setModuleCounts] = useState({}); // entityName -> "loading" | number, for the nav's counts
+  const [moduleRows, setModuleRows] = useState({}); // entityName -> "loading" | row[] | null, what the Dashboard's insights read
   // "Something's not working — fix it" without leaving Run mode: reuses the exact same
   // describe/rework/apply pipeline as the Studio's own Describe panel (genDescription,
   // handleGenerate, pendingXml, handleApplyDescription) — just a different entry point, so a
@@ -566,13 +602,28 @@ export default function RuntimeEngine() {
 
   // Record counts for the Dashboard's stat cards — one small request per module's entity, fired
   // in parallel; each card updates independently as its own count arrives.
+  // The rows themselves are kept too (not just their count) — the Dashboard builds its
+  // app-specific widgets (status breakdowns, upcoming items, totals) from them.
   function loadModuleCounts(appId, modules) {
     setModuleCounts(Object.fromEntries(modules.map((m) => [m.key, "loading"])));
+    setModuleRows(Object.fromEntries(modules.map((m) => [m.key, "loading"])));
     modules.forEach((m) => {
       api.get(`/runtime-applications/${appId}/entities/${m.key}/rows`)
-        .then((res) => setModuleCounts((c) => ({ ...c, [m.key]: res.data.rows.length })))
-        .catch(() => setModuleCounts((c) => ({ ...c, [m.key]: null })));
+        .then((res) => {
+          setModuleCounts((c) => ({ ...c, [m.key]: res.data.rows.length }));
+          setModuleRows((r) => ({ ...r, [m.key]: res.data.rows }));
+        })
+        .catch(() => {
+          setModuleCounts((c) => ({ ...c, [m.key]: null }));
+          setModuleRows((r) => ({ ...r, [m.key]: null }));
+        });
     });
+  }
+
+  // Back to the Dashboard with fresh data — records may have been added/edited since it loaded.
+  function openDashboard() {
+    setActiveElement(null);
+    if (selectedId && detail) loadModuleCounts(selectedId, buildAppModules(detail, loggedInRole));
   }
 
   // Owner-only read-back of the security/audit log (see auditLog.ts) — logins, registrations,
@@ -792,6 +843,7 @@ export default function RuntimeEngine() {
             if (cpEl) openElement(cpEl);
           } else {
             setActiveElement(null); // back to the normal app view
+            loadModuleCounts(selectedId, buildAppModules(detail, session.role ?? null));
           }
         } else if (action === "register" && !hasProblem) {
           // A current-shape (email-based) registration succeeds WITHOUT a session — the account
@@ -1429,98 +1481,249 @@ export default function RuntimeEngine() {
     );
   }
 
+  // The Dashboard is built from THIS app's own structure and data (see dashboardInsights.js) —
+  // its main record type, what needs attention, money totals, what's coming up, and how records
+  // spread across linked entities — so a hospital app and an HR app get genuinely different
+  // dashboards instead of the same grid of module cards.
   function renderAppDashboard(modules) {
-    const formModules = modules.filter((m) => m.formScreenEl);
-    const counts = modules.map((m) => (typeof moduleCounts[m.key] === "number" ? moduleCounts[m.key] : 0));
-    const maxCount = Math.max(1, ...counts);
-    const totalRecords = counts.reduce((a, b) => a + b, 0);
     const who = displayNameFor(accountEntityEl && loggedIn ? loggedInIdentity : user?.email);
+    if (modules.length === 0) {
+      return (
+        <div className="rt-card rt-fade rt-empty" style={{ marginTop: 8 }}>
+          <div className="rt-empty-icon"><Lock size={28} /></div>
+          <div style={{ fontWeight: 700, fontSize: 17 }}>No modules available{loggedIn ? " for your account" : ""}</div>
+          <div style={{ color: "var(--rt-muted)", fontSize: 13.5, margin: "8px auto 0", maxWidth: 460, lineHeight: 1.6 }}>
+            {accountEntityEl && loggedIn
+              ? `Every screen in ${detail.name} is limited to specific roles${loggedInRole ? `, and "${loggedInRole}" isn't one of them` : ", and your account hasn't been given a role yet"}. Ask an administrator to assign you a role.`
+              : `${detail.name} doesn't have any list screens yet. Use Fix / Update to add some.`}
+          </div>
+        </div>
+      );
+    }
+    const ins = buildInsights({ modules, detail, rowsByEntity: moduleRows });
+    const focus = ins.focus || modules[0];
+    const formModules = [focus, ...modules.filter((m) => m !== focus)].filter((m) => m.formScreenEl);
+    const KPI_ICONS = { attention: AlertTriangle, money: Wallet };
+    const TONE_STYLE = {
+      warning: ["#fffbeb", "#b45309"], success: ["#ecfdf5", "#047857"],
+    };
+    const fmtKpi = (k) => {
+      if (k.value == null) return "—";
+      if (k.kind === "money") return k.value.toLocaleString(undefined, { minimumFractionDigits: k.decimals ? 2 : 0, maximumFractionDigits: k.decimals ? 2 : 0 });
+      return k.value.toLocaleString();
+    };
+    const relDay = (d) => {
+      const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86400000);
+      if (days === 0) return "Today";
+      if (days === 1) return "Tomorrow";
+      if (days === -1) return "Yesterday";
+      return days > 0 && days < 7 ? d.toLocaleDateString(undefined, { weekday: "long" }) : null;
+    };
+    const openModuleGrid = (m) => openElement(m.screenEl);
+    const openRow = (m, row) => {
+      const target = parseScreenForRun(m.screenEl.xml).grid?.rowClick?.targetScreen;
+      if (target) openRowForEdit(target, row); else openModuleGrid(m);
+    };
+
     return (
       <div className="rt-fade">
+        {/* Hero — the app's own highlights, with its main record type's icon as the backdrop. */}
         <div className="rt-hero">
+          <div style={{ position: "absolute", right: 36, top: "50%", transform: "translateY(-50%)", opacity: 0.13, pointerEvents: "none" }}>
+            <ModuleIcon entity={focus.key} icon={focus.icon} size={150} />
+          </div>
           <div style={{ position: "relative", zIndex: 1 }}>
             <div style={{ fontSize: 13, opacity: 0.85, display: "flex", alignItems: "center", gap: 7 }}>
               <CalendarDays size={14} /> {new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
             </div>
             <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.025em", marginTop: 8 }}>{greetingForHour(new Date().getHours())}, {who}</div>
-            <div style={{ fontSize: 14, opacity: 0.9, marginTop: 6, maxWidth: 560 }}>
-              Here's what's happening across {detail.name} — {totalRecords.toLocaleString()} record{totalRecords === 1 ? "" : "s"} in {modules.length} module{modules.length === 1 ? "" : "s"}.
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+              {ins.loading && <span className="rt-hero-btn" style={{ cursor: "default" }}>Loading your data…</span>}
+              {!ins.loading && ins.highlights.length === 0 && (
+                <span style={{ fontSize: 14, opacity: 0.9 }}>
+                  {ins.totalRecords === 0 ? `Welcome to ${detail.name} — let's add your first records.` : `${ins.totalRecords.toLocaleString()} records across ${modules.length} modules.`}
+                </span>
+              )}
+              {!ins.loading && ins.highlights.map((h) => (
+                <span key={h} style={{ background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.28)", borderRadius: 999, padding: "5px 12px", fontSize: 13, fontWeight: 600 }}>{h}</span>
+              ))}
             </div>
             {formModules.length > 0 && (
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 20 }}>
                 {formModules.slice(0, 3).map((m) => (
-                  <button key={m.key} className="rt-hero-btn" onClick={() => openElement(m.formScreenEl)}><Plus size={15} /> New {m.label}</button>
+                  <button key={m.key} className="rt-hero-btn" onClick={() => openElement(m.formScreenEl)}><Plus size={15} /> New {m.label.toLowerCase()}</button>
                 ))}
               </div>
             )}
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 16, marginTop: 22 }}>
-          {modules.map((m) => {
-            const count = moduleCounts[m.key];
-            const [bg, fg] = avatarColors(m.key);
+        {/* KPIs — chosen per app: main records, what needs attention, money, next busiest. */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 16, marginTop: 22 }}>
+          {ins.kpis.map((k) => {
+            const Icon = KPI_ICONS[k.kind];
+            const [bg, fg] = TONE_STYLE[k.tone] || avatarColors(k.module.key);
             return (
-              <button key={m.key} className="rt-card rt-kpi" onClick={() => openElement(m.screenEl)}>
+              <button key={k.key} className="rt-card rt-kpi" onClick={() => openModuleGrid(k.module)}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div className="rt-kpi-icon" style={{ background: bg, color: fg }}><ModuleIcon entity={m.key} icon={m.icon} size={19} /></div>
+                  <div className="rt-kpi-icon" style={{ background: bg, color: fg }}>{Icon ? <Icon size={19} /> : <ModuleIcon entity={k.module.key} icon={k.module.icon} size={19} />}</div>
                   <ArrowUpRight size={16} style={{ color: "#94a3b8" }} />
                 </div>
-                <div className="rt-kpi-value">
-                  {count === "loading" ? <span className="rt-skel" style={{ display: "inline-block", width: 52, height: 26 }} /> : count === null ? "—" : count.toLocaleString()}
-                </div>
-                <div className="rt-kpi-label">{pluralize(m.label)}</div>
+                <div className="rt-kpi-value">{k.value == null && ins.loading ? <span className="rt-skel" style={{ display: "inline-block", width: 56, height: 26 }} /> : fmtKpi(k)}</div>
+                <div className="rt-kpi-label">{k.label}</div>
+                {k.sub && <div style={{ fontSize: 12, color: k.tone === "warning" ? "#b45309" : "var(--rt-muted)", marginTop: 4 }}>{k.sub}</div>}
               </button>
             );
           })}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: formModules.length ? "minmax(0, 1.5fr) minmax(280px, 1fr)" : "1fr", gap: 16, marginTop: 22, alignItems: "start" }}>
-          <div className="rt-card">
+        {/* Status breakdown + timeline — the two widgets that most change from app to app. */}
+        {(ins.breakdowns.length > 0 || ins.timeline) && (
+          <div style={{ display: "grid", gridTemplateColumns: ins.breakdowns.length > 0 && ins.timeline ? "minmax(0, 1fr) minmax(0, 1.2fr)" : "1fr", gap: 16, marginTop: 22, alignItems: "start" }}>
+            {ins.breakdowns[0] && (() => {
+              const b = ins.breakdowns[0];
+              return (
+                <div className="rt-card">
+                  <div className="rt-card-head">
+                    <div style={{ flex: 1 }}>
+                      <div className="rt-card-title">{b.title}</div>
+                      <div className="rt-card-sub">{b.total.toLocaleString()} {pluralize(b.module.label).toLowerCase()} in total</div>
+                    </div>
+                    <PieChart size={18} style={{ color: "#94a3b8" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 24, padding: "20px 22px", flexWrap: "wrap" }}>
+                    <Donut buckets={b.buckets} total={b.total} />
+                    <div style={{ flex: 1, minWidth: 160, display: "flex", flexDirection: "column", gap: 10 }}>
+                      {b.buckets.map((bk, i) => (
+                        <div key={bk.value} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5 }}>
+                          <span style={{ width: 10, height: 10, borderRadius: 3, background: bucketColor(bk, i), flexShrink: 0 }} />
+                          <span style={{ flex: 1, color: "var(--rt-text-2)" }}>{bk.value}</span>
+                          <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{bk.count}</span>
+                          <span style={{ width: 42, textAlign: "right", color: "var(--rt-muted)", fontSize: 12.5 }}>{Math.round((bk.count / b.total) * 100)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+            {ins.timeline && (
+              <div className="rt-card">
+                <div className="rt-card-head">
+                  <div style={{ flex: 1 }}>
+                    <div className="rt-card-title">{ins.timeline.title}</div>
+                    <div className="rt-card-sub">By {humanize(ins.timeline.dateField).toLowerCase()}</div>
+                  </div>
+                  <button className="rt-btn rt-btn-ghost rt-btn-sm" onClick={() => openModuleGrid(ins.timeline.module)}>View all <ChevronRight size={14} /></button>
+                </div>
+                <div style={{ padding: "6px 10px 10px" }}>
+                  {ins.timeline.items.map((it, i) => {
+                    const rel = relDay(it.date);
+                    return (
+                      <button key={i} onClick={() => openRow(ins.timeline.module, it.row)}
+                        style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "10px 10px", border: "none", borderRadius: 10, background: "none", cursor: "pointer", textAlign: "left", color: "inherit" }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--rt-primary-softer)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}>
+                        <span style={{ width: 46, flexShrink: 0, textAlign: "center", borderRadius: 10, border: "1px solid var(--rt-border)", overflow: "hidden" }}>
+                          <span style={{ display: "block", background: "var(--rt-primary)", color: "#fff", fontSize: 10, fontWeight: 700, textTransform: "uppercase", padding: "2px 0" }}>
+                            {it.date.toLocaleDateString(undefined, { month: "short" })}
+                          </span>
+                          <span style={{ display: "block", fontSize: 17, fontWeight: 800, padding: "3px 0" }}>{it.date.getDate()}</span>
+                        </span>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title}</span>
+                          <span style={{ display: "block", fontSize: 12.5, color: "var(--rt-muted)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {[rel, ...it.context].filter(Boolean).join(" · ") || formatDate(it.date.toISOString().slice(0, 10))}
+                          </span>
+                        </span>
+                        {it.status && <span className={`rt-badge ${toneForValue(it.status)}`}>{it.status}</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Distribution across a linked entity + any further status breakdowns. */}
+        {(ins.distribution || ins.breakdowns.length > 1) && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginTop: 16, alignItems: "start" }}>
+            {ins.distribution && (
+              <div className="rt-card">
+                <div className="rt-card-head">
+                  <div style={{ flex: 1 }}>
+                    <div className="rt-card-title">{ins.distribution.title}</div>
+                    <div className="rt-card-sub">Top {ins.distribution.items.length}</div>
+                  </div>
+                  <BarChart3 size={18} style={{ color: "#94a3b8" }} />
+                </div>
+                <div style={{ padding: "14px 20px 18px", display: "flex", flexDirection: "column", gap: 12 }}>
+                  {ins.distribution.items.map((it) => {
+                    const [bg, fg] = avatarColors(it.label);
+                    return (
+                      <div key={it.label} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <span className="rt-avatar" style={{ background: bg, color: fg, width: 28, height: 28, fontSize: 11 }}>{initialsFor(it.label)}</span>
+                        <span style={{ width: 140, fontSize: 13.5, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.label}</span>
+                        <span className="rt-bar" style={{ flex: 1 }}><span style={{ width: `${(it.count / ins.distribution.max) * 100}%` }} /></span>
+                        <span style={{ width: 32, textAlign: "right", fontWeight: 700, fontSize: 13.5, fontVariantNumeric: "tabular-nums" }}>{it.count}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {ins.breakdowns.slice(1).map((b) => (
+              <div key={b.key} className="rt-card">
+                <div className="rt-card-head">
+                  <div style={{ flex: 1 }}>
+                    <div className="rt-card-title">{b.title}</div>
+                    <div className="rt-card-sub">{b.total.toLocaleString()} total</div>
+                  </div>
+                </div>
+                <div style={{ padding: "16px 20px 18px" }}>
+                  <div style={{ display: "flex", height: 12, borderRadius: 999, overflow: "hidden", background: "var(--rt-canvas)" }}>
+                    {b.buckets.map((bk, i) => <span key={bk.value} title={`${bk.value}: ${bk.count}`} style={{ width: `${(bk.count / b.total) * 100}%`, background: bucketColor(bk, i) }} />)}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px", marginTop: 14 }}>
+                    {b.buckets.map((bk, i) => (
+                      <span key={bk.value} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, color: "var(--rt-text-2)" }}>
+                        <span style={{ width: 9, height: 9, borderRadius: 3, background: bucketColor(bk, i) }} /> {bk.value} <strong style={{ color: "var(--rt-text)" }}>{bk.count}</strong>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Getting started — only the modules that are still empty. */}
+        {!ins.loading && ins.emptyModules.length > 0 && (
+          <div className="rt-card" style={{ marginTop: 16 }}>
             <div className="rt-card-head">
               <div style={{ flex: 1 }}>
-                <div className="rt-card-title">Records by module</div>
-                <div className="rt-card-sub">How your data is spread across {detail.name}</div>
+                <div className="rt-card-title">{ins.totalRecords === 0 ? "Get started" : "Finish setting up"}</div>
+                <div className="rt-card-sub">{ins.emptyModules.length} module{ins.emptyModules.length === 1 ? " has" : "s have"} no records yet</div>
               </div>
-              <BarChart3 size={18} style={{ color: "#94a3b8" }} />
+              <span className="rt-badge plain neutral">{modules.length - ins.emptyModules.length}/{modules.length} done</span>
             </div>
-            <div style={{ padding: "8px 20px 16px" }}>
-              {modules.map((m, i) => (
-                <button key={m.key} onClick={() => openElement(m.screenEl)} style={{ display: "flex", alignItems: "center", gap: 14, width: "100%", padding: "11px 0", border: "none", borderBottom: i === modules.length - 1 ? "none" : "1px solid var(--rt-border)", background: "none", cursor: "pointer", textAlign: "left", color: "inherit" }}>
-                  <ModuleIcon entity={m.key} icon={m.icon} size={16} style={{ color: "var(--rt-muted)" }} />
-                  <span style={{ width: 150, fontSize: 13.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pluralize(m.label)}</span>
-                  <span className="rt-bar" style={{ flex: 1 }}><span style={{ width: `${(counts[i] / maxCount) * 100}%` }} /></span>
-                  <span style={{ width: 48, textAlign: "right", fontSize: 13.5, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{typeof moduleCounts[m.key] === "number" ? moduleCounts[m.key].toLocaleString() : "…"}</span>
+            <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: 8 }}>
+              {ins.emptyModules.map((m) => (
+                <button key={m.key} className="rt-quick" onClick={() => (m.formScreenEl ? openElement(m.formScreenEl) : openModuleGrid(m))}>
+                  <span style={{ width: 34, height: 34, borderRadius: 9, background: "var(--rt-primary-soft)", color: "var(--rt-primary)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <ModuleIcon entity={m.key} icon={m.icon} size={16} />
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: "block", fontSize: 13.5, fontWeight: 600 }}>Add your first {m.label.toLowerCase()}</span>
+                    <span style={{ display: "block", fontSize: 12, color: "var(--rt-muted)", marginTop: 1 }}>{pluralize(m.label)} is empty</span>
+                  </span>
+                  <Plus size={16} style={{ color: "var(--rt-muted)" }} />
                 </button>
               ))}
             </div>
           </div>
-          {formModules.length > 0 && (
-            <div className="rt-card">
-              <div className="rt-card-head">
-                <div style={{ flex: 1 }}>
-                  <div className="rt-card-title">Quick actions</div>
-                  <div className="rt-card-sub">Jump straight into common tasks</div>
-                </div>
-                <Zap size={18} style={{ color: "#94a3b8" }} />
-              </div>
-              <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                {formModules.slice(0, 6).map((m) => (
-                  <button key={m.key} className="rt-quick" onClick={() => openElement(m.formScreenEl)}>
-                    <span style={{ width: 34, height: 34, borderRadius: 9, background: "var(--rt-primary-soft)", color: "var(--rt-primary)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <ModuleIcon entity={m.key} icon={m.icon} size={16} />
-                    </span>
-                    <span style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ display: "block", fontSize: 13.5, fontWeight: 600 }}>New {m.label.toLowerCase()}</span>
-                      <span style={{ display: "block", fontSize: 12, color: "var(--rt-muted)", marginTop: 1 }}>Add a record to {pluralize(m.label).toLowerCase()}</span>
-                    </span>
-                    <Plus size={16} style={{ color: "var(--rt-muted)" }} />
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        )}
       </div>
     );
   }
@@ -1614,7 +1817,7 @@ export default function RuntimeEngine() {
                 )}
               </div>
               <nav className="rt-nav">
-                <button className={`rt-nav-item${!activeElement ? " active" : ""}`} onClick={() => setActiveElement(null)} title="Dashboard">
+                <button className={`rt-nav-item${!activeElement ? " active" : ""}`} onClick={openDashboard} title="Dashboard">
                   <LayoutDashboard size={18} strokeWidth={1.8} /> {!sidebarCollapsed && "Dashboard"}
                 </button>
                 {groupOrder.map((group) => {
@@ -1651,7 +1854,7 @@ export default function RuntimeEngine() {
             <div className="rt-main">
               <header className="rt-topbar">
                 <div className="rt-crumbs">
-                  <button onClick={() => setActiveElement(null)}>{detail.name}</button>
+                  <button onClick={openDashboard}>{detail.name}</button>
                   {activeModule && (
                     <>
                       <ChevronRight size={14} />
