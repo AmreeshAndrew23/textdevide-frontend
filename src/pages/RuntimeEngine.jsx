@@ -1,14 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { GoogleLogin } from "@react-oauth/google";
 import api, { API_ORIGIN } from "../api/client";
 import { ERDiagram } from "../components/ERDiagram";
+import AskPanel from "../components/AskPanel";
+import { BrandMark } from "../components/StudioLayout";
 import { useAuth } from "../context/AuthContext";
+import {
+  parseScreenForRun, parseEntityForRun, parseRelationshipForRun, parseDataSourceForRun, parseValidationForRun,
+  parseActionForRun, humanize, parseThemeForRun, buildFullXml, downloadTextFile, xmlFilenameFor,
+  applicationToErTables, summarizeApplication,
+} from "../utils/applicationXml";
 import {
   Users, UserCog, Building2, Home, Folder, DollarSign, Clock, Palmtree, Warehouse,
   ShoppingCart, Receipt, CreditCard, Shield, Wrench, ClipboardCheck, FileText,
   GraduationCap, BookOpen, HeartPulse, Stethoscope, Lock, NotebookPen, Car, Package, Briefcase,
   Search, ChevronDown, X as XIcon, Download,
+  Sparkles, MessageSquareText, Network, FileCode2, ShieldCheck, LayoutDashboard, Play, ArrowLeft, Menu, Bell,
+  Copy, Boxes, Monitor, GitBranch, ListChecks, Database, Zap, Palette, KeyRound, Hash, ChevronRight, Check,
+  RotateCcw, Inbox,
 } from "lucide-react";
 
 // The second, independent "Runtime Engine" — its own standalone space, NOT nested under any
@@ -18,133 +28,19 @@ import {
 // Dashboard/project workflow, which this page never touches.
 
 const ELEMENT_TAGS = ["Entity", "Relationship", "Validation", "DataSource", "Screen", "Action", "Theme", "Session", "Auditing", "AutoNumber"];
+// How each element tag reads in the workspace nav — a plain plural label and a line icon.
+const TAG_META = {
+  Entity: { label: "Entities", icon: Boxes }, Relationship: { label: "Relationships", icon: GitBranch },
+  Validation: { label: "Validations", icon: ListChecks }, DataSource: { label: "Data sources", icon: Database },
+  Screen: { label: "Screens", icon: Monitor }, Action: { label: "Actions", icon: Zap },
+  Theme: { label: "Theme", icon: Palette }, Session: { label: "Session", icon: KeyRound },
+  Auditing: { label: "Auditing", icon: ShieldCheck }, AutoNumber: { label: "Auto numbers", icon: Hash },
+};
 
 // GitHub client ids are not secret (only the server-held CLIENT_SECRET is) — safe to read
 // client-side the same way VITE_GOOGLE_CLIENT_ID already is for the Studio's own login page.
 const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID || "";
 
-// Minimal client-side extraction (native DOMParser, no library) of just enough from a Screen's
-// raw XML to render a bare, unstyled Run panel — UIField label/bind, Button label/action, and (for
-// a browse screen) the Grid's own columns/entity/rowClick target. This mirrors backend-node's
-// applicationModel.ts's parseScreenElement in spirit, not by sharing code (that parser is
-// server-only); good enough for the MVP "fastest, bare form/table" tier, not a full themed renderer.
-function parseScreenForRun(xml) {
-  const doc = new DOMParser().parseFromString(xml, "text/xml");
-  const root = doc.documentElement;
-  const entity = root.getAttribute("entity");
-  const fields = Array.from(root.querySelectorAll("Fields > UIField")).map((el) => {
-    const bind = el.getAttribute("bind") || (el.getAttribute("valueFrom") || "").replace(/^field:/, "");
-    return {
-      label: el.getAttribute("label") || bind,
-      bind,
-      control: el.getAttribute("control"),
-      optionsFrom: (el.getAttribute("optionsFrom") || "").replace(/^query:/, "") || null,
-      readonly: el.getAttribute("readonly") === "true",
-    };
-  });
-  const buttons = Array.from(root.querySelectorAll("Buttons > Button")).map((el) => ({
-    label: el.getAttribute("label"), action: el.getAttribute("action"),
-  }));
-  const gridEl = root.querySelector("Grid");
-  const grid = gridEl
-    ? {
-        entity: gridEl.getAttribute("entity"),
-        columns: Array.from(gridEl.querySelectorAll("Column")).map((c) => ({ header: c.getAttribute("header"), bind: c.getAttribute("bind") })),
-        rowClick: (() => {
-          const on = gridEl.querySelector('On[event="rowClick"]');
-          return on ? { action: on.getAttribute("action"), targetScreen: on.getAttribute("targetScreen") } : null;
-        })(),
-      }
-    : null;
-  const requiresRoleAttr = root.getAttribute("requiresRole");
-  const requiresRole = requiresRoleAttr ? requiresRoleAttr.split(",").map((r) => r.trim()).filter(Boolean) : [];
-  return { entity, fields, buttons, grid, requiresRole: requiresRole.length ? requiresRole : null };
-}
-
-// Entity field metadata (type/required/enum values) — drives real input controls (date pickers,
-// number inputs, enum dropdowns, required markers) instead of treating every field as plain text.
-// Same fixed conventions the backend's isAccount Entity must match exactly (see
-// applicationModel.ts's assertAccountEntityShape/looksLikeAccountEntity) — kept as literal sets
-// here too, deliberately not imported (that module is server-only), same tradeoff as every other
-// small duplicated helper in this engine. TWO shapes, same dual-shape reasoning as the backend:
-// LEGACY (username-based) is what already-generated apps still use; CURRENT (email-based) is what
-// every app generates from now on (email identity, OTP verification, OAuth sign-in).
-const LEGACY_ACCOUNT_FIELD_NAMES = new Set(["id", "username", "passwordHash", "mustChangePassword"]);
-const CURRENT_ACCOUNT_FIELD_NAMES = new Set([
-  "id", "email", "passwordHash", "mustChangePassword", "firstName", "lastName", "dob", "emailVerified", "authProvider",
-]);
-
-function parseEntityForRun(xml) {
-  const doc = new DOMParser().parseFromString(xml, "text/xml");
-  const root = doc.documentElement;
-  const fields = Array.from(root.querySelectorAll("Field")).map((f) => ({
-    name: f.getAttribute("name"),
-    type: f.getAttribute("type") || "string",
-    key: f.getAttribute("key") === "true",
-    required: f.getAttribute("required") === "true",
-    values: Array.from(f.querySelectorAll("Value")).map((v) => v.textContent.trim()).filter(Boolean),
-  }));
-  // Defense in depth, same reasoning as applicationModel.ts's parseEntityElement: the AI
-  // sometimes forgets isAccount="true" even when it gets the User entity's field shape exactly
-  // right — an Entity literally named "User" with exactly one of the two known-good field sets IS
-  // the account entity, attribute or not, so login/signup never silently breaks over a missed
-  // attribute.
-  const name = root.getAttribute("name") || "";
-  const fieldNames = fields.map((f) => f.name);
-  const matchesShape = (shape) => fieldNames.length === shape.size && fieldNames.every((n) => shape.has(n));
-  const looksLikeAccount = name === "User" && (matchesShape(LEGACY_ACCOUNT_FIELD_NAMES) || matchesShape(CURRENT_ACCOUNT_FIELD_NAMES));
-  return {
-    fields, isAccount: root.getAttribute("isAccount") === "true" || looksLikeAccount, icon: root.getAttribute("icon") || null,
-    // Whether this account entity supports email/OTP/OAuth (the current shape) vs the older,
-    // plain username/password convention — drives whether the Run panel shows the OAuth buttons
-    // and the VerifyEmail/ForgotPassword/ResetPassword screens at all.
-    hasEmailIdentity: fieldNames.includes("email"),
-  };
-}
-
-function parseRelationshipForRun(xml) {
-  const el = new DOMParser().parseFromString(xml, "text/xml").documentElement;
-  return { fromEntity: el.getAttribute("fromEntity"), fromField: el.getAttribute("fromField"), toEntity: el.getAttribute("toEntity") };
-}
-
-function parseDataSourceForRun(xml) {
-  const el = new DOMParser().parseFromString(xml, "text/xml").documentElement;
-  const selectEl = el.querySelector("Select");
-  return { entity: selectEl?.getAttribute("entity") || null };
-}
-
-// Minimal client-side extraction of a Validation/Action element's own entity binding + a short
-// human-readable summary — same spirit as parseScreenForRun above, just enough for the ER Map's
-// "every node, and what it's connected to" tables, not a full typed model (that's applicationModel.ts's
-// job, server-only).
-function parseValidationForRun(xml) {
-  const el = new DOMParser().parseFromString(xml, "text/xml").documentElement;
-  const conditionEl = el.querySelector("Condition");
-  const messageEl = el.querySelector("Message");
-  return {
-    id: el.getAttribute("id") || "",
-    entity: el.getAttribute("entity"),
-    when: el.getAttribute("when") || "onSave",
-    onViolation: el.getAttribute("onViolation") || "reject",
-    test: conditionEl?.getAttribute("test") || "",
-    message: messageEl ? messageEl.textContent.trim() : "",
-  };
-}
-
-function parseActionForRun(xml) {
-  const el = new DOMParser().parseFromString(xml, "text/xml").documentElement;
-  const steps = Array.from(el.querySelectorAll("Steps > *")).map((s) => {
-    if (s.tagName === "Set") return `Set ${s.getAttribute("field")} = ${s.getAttribute("value")}`;
-    if (s.tagName === "Save") return "Save";
-    if (s.tagName === "Notify") return `Notify ${s.getAttribute("to")}`;
-    return s.tagName;
-  });
-  return { entity: el.getAttribute("entity"), steps };
-}
-
-function humanize(name) {
-  return (name || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-}
 
 function greetingForHour(hour) {
   if (hour < 12) return "Good morning";
@@ -236,28 +132,94 @@ const PRE_LOGIN_AUX_SCREENS = new Set(["VerifyEmail", "ForgotPassword", "ResetPa
 // instead of only in Neo4j Browser.
 function ElementTable({ title, columns, rows, emptyLabel }) {
   return (
-    <div style={{ marginTop: 24 }}>
-      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>{title}</div>
+    <div style={{ marginTop: 28 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>
+        {title} <span style={{ color: "var(--muted)", fontWeight: 500, fontSize: 12.5 }}>· {rows.length}</span>
+      </div>
       {rows.length === 0 ? (
-        <div style={{ fontSize: 12.5, color: "var(--st-muted)" }}>{emptyLabel}</div>
+        <div style={{ fontSize: 12.5, color: "var(--st-muted)", padding: "14px 16px", border: "1px dashed var(--border-strong)", borderRadius: 10 }}>{emptyLabel}</div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-          <thead>
-            <tr style={{ background: "rgba(0,0,0,0.05)" }}>
-              {columns.map((h) => <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontWeight: 600 }}>{h}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, i) => (
-              <tr key={i} style={{ borderBottom: "1px solid var(--st-border)" }}>
-                {row.map((cell, j) => <td key={j} style={{ padding: "6px 10px" }}>{cell}</td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead><tr>{columns.map((h) => <th key={h}>{h}</th>)}</tr></thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i}>{row.map((cell, j) => <td key={j} style={j === 0 ? { color: "var(--text)", fontWeight: 500 } : undefined}>{cell}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
+}
+
+function CopyTextButton({ text }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="studio-btn-secondary studio-btn-sm"
+      onClick={() => navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {})}
+    >
+      {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+// The Review step's "what will this do" digest of a generated (not yet applied) result — its
+// top-level elements grouped by tag, each marked new or updated against what the application
+// already has (an updated element is matched by tag + name, the same way mergeApplicationNodes
+// replaces it). Purely informational; the XML itself is still one click away.
+function summarizeXmlFragment(xml, detail) {
+  try {
+    const doc = new DOMParser().parseFromString(xml, "text/xml");
+    if (doc.getElementsByTagName("parsererror").length > 0) return { error: true, groups: [], total: 0 };
+    const existing = new Set((detail?.elements || []).map((e) => `${e.tag}:${e.name}`));
+    const byTag = new Map();
+    for (const el of Array.from(doc.documentElement.children)) {
+      const name = el.getAttribute("name") || el.getAttribute("id") || el.tagName;
+      if (!byTag.has(el.tagName)) byTag.set(el.tagName, []);
+      byTag.get(el.tagName).push({ name, isNew: !existing.has(`${el.tagName}:${name}`) });
+    }
+    const order = ELEMENT_TAGS.filter((t) => byTag.has(t)).concat([...byTag.keys()].filter((t) => !ELEMENT_TAGS.includes(t)));
+    const groups = order.map((tag) => ({ tag, items: byTag.get(tag) }));
+    return { error: false, groups, total: groups.reduce((n, g) => n + g.items.length, 0) };
+  } catch {
+    return { error: true, groups: [], total: 0 };
+  }
+}
+
+// One line of plain-English context under an element's name in the Elements browser.
+function describeElement(el) {
+  try {
+    if (el.tag === "Entity") {
+      const e = parseEntityForRun(el.xml);
+      return `${e.fields.length} field${e.fields.length === 1 ? "" : "s"}${e.isAccount ? " · user accounts" : ""}`;
+    }
+    if (el.tag === "Screen") {
+      const s = parseScreenForRun(el.xml);
+      return `${s.grid ? "Browse list" : "Form"}${s.entity ? ` · ${humanize(s.entity)}` : ""}${s.requiresRole ? ` · ${s.requiresRole.join(", ")} only` : ""}`;
+    }
+    if (el.tag === "Validation") {
+      const v = parseValidationForRun(el.xml);
+      return v.message || `${v.entity} · ${v.when}`;
+    }
+    if (el.tag === "Relationship") {
+      const r = parseRelationshipForRun(el.xml);
+      return `${r.fromEntity}.${r.fromField} → ${r.toEntity}`;
+    }
+    if (el.tag === "Action") {
+      const a = parseActionForRun(el.xml);
+      return a.steps.join(" → ") || a.entity || "Custom action";
+    }
+    if (el.tag === "DataSource") {
+      const d = parseDataSourceForRun(el.xml);
+      return d.entity ? `Lists ${humanize(d.entity)} records` : "Data source";
+    }
+  } catch {
+    // Fall through to the generic label for anything that doesn't parse cleanly.
+  }
+  return el.tag;
 }
 
 // A real searchable lookup picker for any FK/dropdown field, universal across every generated
@@ -395,92 +357,6 @@ function buildAppModules(detail, role = null) {
   return modules;
 }
 
-const DEFAULT_THEME = { logo: null, primary: "#4f46e5", accent: "#f59e0b", background: "#ffffff", fontFamily: "system-ui, sans-serif", fontSize: "14", cornerRadius: "6", density: "comfortable" };
-
-// Extracts the generated <Theme> element's Colors/Font/Style/Logo into something directly usable
-// as inline CSS — the only part of the vocabulary that's purely cosmetic (per the plan's Phase 2
-// scope note), so applying it needed no backend/engine changes at all, just reading what's already
-// stored and stopping ignoring it in the Run panel.
-function parseThemeForRun(xml) {
-  if (!xml) return DEFAULT_THEME;
-  const doc = new DOMParser().parseFromString(xml, "text/xml");
-  const root = doc.documentElement;
-  const logo = root.querySelector("Logo");
-  const colors = root.querySelector("Colors");
-  const font = root.querySelector("Font");
-  const style = root.querySelector("Style");
-  return {
-    logo: logo?.getAttribute("src") || null,
-    primary: colors?.getAttribute("primary") || DEFAULT_THEME.primary,
-    accent: colors?.getAttribute("accent") || DEFAULT_THEME.accent,
-    background: colors?.getAttribute("background") || DEFAULT_THEME.background,
-    fontFamily: font?.getAttribute("family") ? `${font.getAttribute("family")}, sans-serif` : DEFAULT_THEME.fontFamily,
-    fontSize: font?.getAttribute("size") || DEFAULT_THEME.fontSize,
-    cornerRadius: style?.getAttribute("cornerRadius") || DEFAULT_THEME.cornerRadius,
-    density: style?.getAttribute("density") || DEFAULT_THEME.density,
-  };
-}
-
-// Reconstructs the whole <Application> document from its stored pieces — the backend keeps one
-// element per Neo4j node (see runtimeEngine/applicationStore.ts), never the original whole-document
-// string, so "view it in one stretch" means rebuilding it client-side from detail.elements, in the
-// same order the server already returns them (position-sorted).
-function buildFullXml(detail) {
-  const attrs = [`name="${detail.name}"`];
-  if (detail.theme) attrs.push(`theme="${detail.theme}"`);
-  if (detail.database) attrs.push(`database="${detail.database}"`);
-  const body = detail.elements.map((el) => el.xml.replace(/^/gm, "  ")).join("\n");
-  return `<Application ${attrs.join(" ")}>\n${body}\n</Application>`;
-}
-
-// Client-side file save — a Blob + temporary <a download>, the same pattern this engine's own
-// generated apps use for CSV export (see aiService.ts's prompt) — no server round-trip needed
-// since buildFullXml already has everything.
-function downloadTextFile(filename, contents, mimeType = "application/xml") {
-  const blob = new Blob([contents], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-// A safe, readable filename from the application's own name — strips anything that isn't
-// alphanumeric/space/dash/underscore so it never produces an invalid filename on any OS.
-function xmlFilenameFor(name) {
-  const safe = (name || "application").trim().replace(/[^a-zA-Z0-9 _-]/g, "").replace(/\s+/g, "-") || "application";
-  return `${safe}.xml`;
-}
-
-// Converts this Application's Entity/Relationship elements into the SAME {tables:[{name,
-// columns:[{name,type,pk,fk}]}]} shape ERDiagram.jsx/erDiagram.js already render for the (now
-// retired) old engine's schema view — zero changes needed to either, just a new source shape.
-function applicationToErTables(detail) {
-  const entityEls = detail.elements.filter((e) => e.tag === "Entity");
-  const relationships = detail.elements.filter((e) => e.tag === "Relationship").map((e) => parseRelationshipForRunFull(e.xml));
-  const tables = entityEls.map((el) => {
-    const { fields } = parseEntityForRun(el.xml);
-    const columns = fields.map((f) => {
-      const rel = relationships.find((r) => r.fromEntity === el.name && r.fromField === f.name);
-      return { name: f.name, type: f.type, pk: f.key, fk: rel ? `${rel.toEntity}.${rel.toField}` : null };
-    });
-    return { name: el.name, columns };
-  });
-  return { tables };
-}
-
-// parseRelationshipForRun (above) drops toField since nothing needed it until now — a separate
-// small parser here rather than widening that one's return shape for every other caller.
-function parseRelationshipForRunFull(xml) {
-  const el = new DOMParser().parseFromString(xml, "text/xml").documentElement;
-  return {
-    fromEntity: el.getAttribute("fromEntity"), fromField: el.getAttribute("fromField"),
-    toEntity: el.getAttribute("toEntity"), toField: el.getAttribute("toField"),
-  };
-}
 
 // A persistent, theme-colored title band above a running Screen — logo (or a monogram fallback)
 // + the Application's own name, so a running app reads as "a real app with a shell" rather than
@@ -503,28 +379,26 @@ function AppBar({ theme, appName }) {
 
 export default function RuntimeEngine() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const [applications, setApplications] = useState(null);
   const [error, setError] = useState("");
 
-  // Creation is name-only now — "ask for project name... when user clicks on it asks for the
-  // description" — the description step itself lives in the detail view's "Describe" panel below,
-  // not this modal, since the same flow is reused later to add MORE to an existing application.
-  const [showNewModal, setShowNewModal] = useState(false);
-  const [newName, setNewName] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState("");
-
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // Which workspace section is showing — one value instead of the old showDescribePanel/
+  // showErMap/showFullXml/showAuditLog flags, which had to be kept mutually exclusive by hand.
+  // "elements" browses the raw elements of activeTag.
+  const [section, setSection] = useState("overview"); // overview | describe | ask | er | xml | audit | elements
   const [activeTag, setActiveTag] = useState("Entity");
   const [activeElement, setActiveElement] = useState(null); // { tag, name, xml }
-  const [showFullXml, setShowFullXml] = useState(false);
-  const [showErMap, setShowErMap] = useState(false);
-  const [showAuditLog, setShowAuditLog] = useState(false);
   const [auditEvents, setAuditEvents] = useState(null);
+  const [showXmlInReview, setShowXmlInReview] = useState(false);
+  // A question handed to the Ask panel from elsewhere (an Overview entity card) — see AskPanel.
+  const [askSeed, setAskSeed] = useState(null);
+  const [showAskDrawer, setShowAskDrawer] = useState(false);
 
   // The "Describe your application" panel — works identically for a brand-new, empty application
   // and for adding more to an existing one later (one entity now, more later; screens now or
@@ -535,7 +409,6 @@ export default function RuntimeEngine() {
   const [genError, setGenError] = useState("");
   const [pendingXml, setPendingXml] = useState(null); // generated, not yet applied
   const [applying, setApplying] = useState(false);
-  const [showDescribePanel, setShowDescribePanel] = useState(false);
 
   const [runFieldValues, setRunFieldValues] = useState({});
   const [runMessages, setRunMessages] = useState([]);
@@ -583,27 +456,33 @@ export default function RuntimeEngine() {
   const [navSearch, setNavSearch] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
 
+  // Only for the header's project switcher — the project list itself lives on Home now.
   function loadApplications() {
-    return api.get("/runtime-applications").then((res) => setApplications(res.data)).catch(() => setError("Failed to load applications."));
+    return api.get("/runtime-applications").then((res) => setApplications(res.data)).catch(() => setApplications([]));
   }
 
   useEffect(() => { loadApplications(); }, []);
 
-  function closeNewModal() {
-    setShowNewModal(false); setNewName(""); setCreateError("");
-  }
+  // Home's "Generate app" hands its description over as location.state.autoDescribe — consumed
+  // exactly once (the ref also covers StrictMode's double effect run), then cleared from history
+  // so a refresh doesn't generate again.
+  const autoDescribeHandledRef = useRef(false);
 
-  function handleCreate() {
-    if (!newName.trim()) return;
-    setCreating(true);
-    setCreateError("");
-    api.post("/runtime-applications", { name: newName })
-      .then((res) => {
-        closeNewModal();
-        return loadApplications().then(() => selectApplication(res.data.id));
-      })
-      .catch((e) => setCreateError(e.response?.data?.message || e.response?.data?.detail || "Failed to create this application."))
-      .finally(() => setCreating(false));
+  // The overrides exist for Home's auto-describe handoff, which calls this in the same tick it
+  // sets genDescription/detail — before either state update would be visible here.
+  function handleGenerate(descriptionOverride, detailOverride) {
+    const description = (typeof descriptionOverride === "string" ? descriptionOverride : genDescription).trim();
+    const d = detailOverride || detail;
+    if (!description) return;
+    setGenerating(true);
+    setGenError("");
+    setPendingXml(null);
+    setShowXmlInReview(false);
+    const existingXml = d && d.elements.length > 0 ? buildFullXml(d) : undefined;
+    api.post("/runtime-applications/generate", { description, existingXml })
+      .then((res) => setPendingXml(res.data.xml))
+      .catch((e) => setGenError(e.response?.data?.message || e.response?.data?.detail || "Failed to generate — try rephrasing the description."))
+      .finally(() => setGenerating(false));
   }
 
   function selectApplication(id) {
@@ -611,19 +490,27 @@ export default function RuntimeEngine() {
     setDetail(null);
     setActiveElement(null);
     setRunMessages([]);
-    setShowFullXml(false);
-    setShowErMap(false);
-    setShowAuditLog(false);
+    setSection("overview");
     setAuditEvents(null);
-    setShowDescribePanel(false);
-    setGenDescription(""); setGenError(""); setPendingXml(null);
+    setShowAskDrawer(false);
+    setAskSeed(null);
+    setGenDescription(""); setGenError(""); setPendingXml(null); setShowXmlInReview(false);
     setLoggedIn(false); setLoggedInIdentity(null); setLoggedInRole(null); setMustChangePassword(false);
     setRunMode(false);
     setDetailLoading(true);
+    const autoDescribe = location.state?.autoDescribe;
     api.get(`/runtime-applications/${id}`)
       .then((res) => {
         setDetail(res.data);
         setActiveTag("Entity");
+        if (autoDescribe && res.data.elements.length === 0 && !autoDescribeHandledRef.current) {
+          autoDescribeHandledRef.current = true;
+          navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+          setSection("describe");
+          setGenDescription(autoDescribe);
+          handleGenerate(autoDescribe, res.data);
+          return;
+        }
         enterAppOrDescribe(res.data);
       })
       .catch(() => setError("Failed to load that application's details."))
@@ -635,7 +522,7 @@ export default function RuntimeEngine() {
   // Describe panel only for a genuinely empty, freshly-created application.
   function enterAppOrDescribe(d) {
     if (d.elements.length === 0) {
-      setShowDescribePanel(true);
+      setSection("describe");
       return;
     }
     const loginEl = findAccountEntityEl(d) && d.elements.find((e) => e.tag === "Screen" && e.name === "Login");
@@ -650,6 +537,27 @@ export default function RuntimeEngine() {
       setActiveElement(null); // land on the Dashboard overview first, not straight into one module
       loadModuleCounts(d.id, modules);
     }
+  }
+
+  // Leaving Run mode lands on the workspace Overview — never on whatever Screen (often Login)
+  // happened to be open inside the running app.
+  function exitRunMode() {
+    setRunMode(false);
+    setActiveElement(null);
+    setShowAskDrawer(false);
+    setSection("overview");
+  }
+
+  function goToSection(next) {
+    setSection(next);
+    setActiveElement(null);
+    if (next === "audit") loadAuditLog();
+  }
+
+  function askAbout(question) {
+    setSection("ask");
+    setActiveElement(null);
+    setAskSeed(question);
   }
 
   // Record counts for the Dashboard's stat cards — one small request per module's entity, fired
@@ -672,29 +580,21 @@ export default function RuntimeEngine() {
       .catch(() => setAuditEvents([]));
   }
 
-  // Deep-link from the Dashboard's project grid (/runtime-engine?id=123) straight into that
-  // application's detail view, same as clicking its card here would.
+  // Deep-link from Home's project grid (/runtime-engine?id=123) straight into that application's
+  // workspace. With no id there's nothing to show here — the project list lives on Home.
   useEffect(() => {
     const idParam = searchParams.get("id");
+    // Same deliberate exception as the GitHub callback effect below: this reacts to an external
+    // signal (the URL changing — a card click on Home, or the header's project switcher).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (idParam) selectApplication(Number(idParam));
+    else navigate("/", { replace: true });
   }, [searchParams]);
 
   // Finds the one Entity marked isAccount="true" (always "User" by convention) — present only on
   // applications with real end-user accounts.
   function findAccountEntityEl(d) {
     return d?.elements.find((e) => e.tag === "Entity" && parseEntityForRun(e.xml).isAccount) || null;
-  }
-
-  function handleGenerate() {
-    if (!genDescription.trim()) return;
-    setGenerating(true);
-    setGenError("");
-    setPendingXml(null);
-    const existingXml = detail && detail.elements.length > 0 ? buildFullXml(detail) : undefined;
-    api.post("/runtime-applications/generate", { description: genDescription, existingXml })
-      .then((res) => setPendingXml(res.data.xml))
-      .catch((e) => setGenError(e.response?.data?.message || e.response?.data?.detail || "Failed to generate — try rephrasing the description."))
-      .finally(() => setGenerating(false));
   }
 
   function handleApplyDescription() {
@@ -711,7 +611,7 @@ export default function RuntimeEngine() {
       : api.put(`/runtime-applications/${selectedId}`, { xml: pendingXml });
     request
       .then(() => {
-        setGenDescription(""); setPendingXml(null); setShowDescribePanel(false); setShowFixModal(false);
+        setGenDescription(""); setPendingXml(null); setShowXmlInReview(false); setSection("overview"); setShowFixModal(false);
         return api.get(`/runtime-applications/${selectedId}`).then((res) => {
           setDetail(res.data);
           setActiveTag("Entity");
@@ -757,21 +657,8 @@ export default function RuntimeEngine() {
   function deleteApplication(id) {
     if (!window.confirm("Delete this application? This can't be undone.")) return;
     api.delete(`/runtime-applications/${id}`)
-      .then(() => { if (selectedId === id) { setSelectedId(null); setDetail(null); } return loadApplications(); })
+      .then(() => navigate("/"))
       .catch(() => setError("Failed to delete this application."));
-  }
-
-  // The list card only carries a summary (elementCounts), not the full XML — reuse the already-
-  // loaded detail when this IS the open application, otherwise fetch it fresh just for the
-  // download, so grabbing an app's XML never requires opening it first.
-  function downloadApplicationXml(app) {
-    if (selectedId === app.id && detail) {
-      downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail));
-      return;
-    }
-    api.get(`/runtime-applications/${app.id}`)
-      .then((res) => downloadTextFile(xmlFilenameFor(res.data.name), buildFullXml(res.data)))
-      .catch(() => setError("Failed to download this application's XML."));
   }
 
   function loadGridRows(entityName, includeDeleted) {
@@ -1095,7 +982,7 @@ export default function RuntimeEngine() {
           {gridLoading && <div style={{ color: "#888" }}>Loading…</div>}
           {!gridLoading && gridRows?.length === 0 && (
             <div style={{ textAlign: "center", padding: "48px 0", color: "#8a8a99" }}>
-              <div style={{ fontSize: 32, marginBottom: 10 }}>🗂️</div>
+              <Inbox size={32} strokeWidth={1.5} style={{ marginBottom: 10 }} />
               <div style={{ marginBottom: 14 }}>No {screenForRun.entity.toLowerCase()}s yet.</div>
               {newRecordEl && <button style={newButtonStyle} onClick={openNewRecordForm}>+ New {screenForRun.entity}</button>}
             </div>
@@ -1458,13 +1345,13 @@ export default function RuntimeEngine() {
     return (
       <div style={{ position: "fixed", inset: 0, zIndex: 100, background: theme.background, display: "flex", flexDirection: "column", fontFamily: theme.fontFamily }}>
         <div className="studio-root" style={{ background: "var(--st-surface)", borderBottom: "1px solid var(--st-border)", padding: "10px 20px", display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-          <button onClick={() => setRunMode(false)} className="studio-btn-secondary" style={{ fontSize: 12.5 }}>← Exit</button>
+          <button onClick={exitRunMode} className="studio-btn-secondary studio-btn-sm" title="Back to the Studio workspace"><ArrowLeft size={14} /> Studio</button>
           <button
             onClick={() => setSidebarCollapsed((c) => !c)}
             title={sidebarCollapsed ? "Expand menu" : "Collapse menu"}
-            style={{ background: "transparent", border: "1px solid var(--st-border)", borderRadius: 7, width: 30, height: 30, cursor: "pointer", color: "var(--st-text)", fontSize: 13, flexShrink: 0 }}
+            className="studio-icon-btn"
           >
-            ☰
+            <Menu size={16} />
           </button>
           {theme.logo ? (
             <img src={theme.logo} alt="" style={{ height: 26, display: "block", flexShrink: 0 }} onError={(e) => { e.target.style.display = "none"; }} />
@@ -1475,7 +1362,7 @@ export default function RuntimeEngine() {
           )}
           <div style={{ fontWeight: 700, fontSize: "1.02em", color: "var(--st-text)", whiteSpace: "nowrap" }}>{detail.name}</div>
           <div style={{ flex: 1, maxWidth: 420, marginLeft: 16, position: "relative" }}>
-            <span style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", fontSize: 12.5, color: "var(--st-muted)", pointerEvents: "none" }}>🔍</span>
+            <Search size={14} style={{ position: "absolute", left: 11, top: "50%", transform: "translateY(-50%)", color: "var(--st-muted)", pointerEvents: "none" }} />
             <input
               value={navSearch}
               onChange={(e) => setNavSearch(e.target.value)}
@@ -1489,9 +1376,9 @@ export default function RuntimeEngine() {
             <button
               onClick={() => setShowNotifications((v) => !v)}
               title="Notifications"
-              style={{ background: "transparent", border: "1px solid var(--st-border)", borderRadius: 8, width: 34, height: 34, cursor: "pointer", color: "var(--st-text)", fontSize: 14, flexShrink: 0 }}
+              className="studio-icon-btn"
             >
-              🔔
+              <Bell size={16} />
             </button>
             {showNotifications && (
               <div
@@ -1554,19 +1441,17 @@ export default function RuntimeEngine() {
                 rows={4}
                 style={{ width: "100%", marginBottom: 8, resize: "vertical" }}
               />
-              <button className="studio-btn-primary" onClick={handleGenerate} disabled={generating || !genDescription.trim()}>
-                {generating ? "Generating…" : "Generate Fix"}
+              <button className="studio-btn-ai" onClick={() => handleGenerate()} disabled={generating || !genDescription.trim()}>
+                {generating ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Generating…</> : <><Sparkles size={15} /> Generate fix</>}
               </button>
               {genError && <div style={{ color: "var(--st-danger)", fontSize: 12.5, marginTop: 8 }}>{genError}</div>}
               {pendingXml && (
                 <div style={{ marginTop: 16 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Review before applying:</div>
-                  <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12, maxHeight: "35vh" }}>
-                    {pendingXml}
-                  </pre>
+                  <pre className="code-block" style={{ maxHeight: "35vh" }}>{pendingXml}</pre>
                   <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                    <button className="studio-btn-primary" onClick={handleApplyDescription} disabled={applying}>
-                      {applying ? "Applying…" : "Apply Fix"}
+                    <button className="studio-btn-ai" onClick={handleApplyDescription} disabled={applying}>
+                      {applying ? "Applying…" : <><Check size={15} strokeWidth={2.5} /> Apply fix</>}
                     </button>
                     <button className="studio-btn-secondary" onClick={() => setPendingXml(null)}>Discard</button>
                   </div>
@@ -1595,7 +1480,7 @@ export default function RuntimeEngine() {
                     display: "flex", alignItems: "center", gap: 8, justifyContent: sidebarCollapsed ? "center" : "flex-start",
                   }}
                 >
-                  <span>🏠</span>
+                  <LayoutDashboard size={17} strokeWidth={1.75} style={{ flexShrink: 0 }} />
                   {!sidebarCollapsed && "Dashboard"}
                 </div>
                 {groupOrder.map((group) => {
@@ -1714,401 +1599,621 @@ export default function RuntimeEngine() {
         {/* A floating button, not another item crammed into the already-busy top bar (where it
             was easy to miss among Exit/logo/name/account controls) — always in the same
             unmistakable spot regardless of how much else is in the bar. */}
-        {!needsLoginGate && (
-          <button
-            onClick={() => setShowFixModal(true)}
-            title="Fix or update this application"
-            style={{
-              position: "fixed", bottom: 28, right: 28, zIndex: 150,
-              background: theme.accent, color: "#fff", border: "none", borderRadius: 999,
-              padding: "12px 20px", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
-              cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
-              display: "flex", alignItems: "center", gap: 8,
-            }}
-          >
-            🛠 Fix / Update
-          </button>
+        {!needsLoginGate && !showAskDrawer && (
+          <div style={{ position: "fixed", bottom: 28, right: 28, zIndex: 150, display: "flex", gap: 10 }}>
+            <button
+              onClick={() => setShowAskDrawer(true)}
+              title="Ask anything about this application's setup"
+              style={{
+                background: "#131722", color: "#fff", border: "1px solid #2f3750", borderRadius: 999,
+                padding: "12px 18px", fontSize: 14, fontWeight: 600, fontFamily: "Inter, system-ui, sans-serif",
+                cursor: "pointer", boxShadow: "0 6px 20px rgba(0,0,0,0.35)", display: "flex", alignItems: "center", gap: 8,
+              }}
+            >
+              <MessageSquareText size={16} /> Ask
+            </button>
+            <button
+              onClick={() => setShowFixModal(true)}
+              title="Fix or update this application"
+              style={{
+                background: theme.accent, color: "#fff", border: "none", borderRadius: 999,
+                padding: "12px 20px", fontSize: 14, fontWeight: 700, fontFamily: "inherit",
+                cursor: "pointer", boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+                display: "flex", alignItems: "center", gap: 8,
+              }}
+            >
+              <Wrench size={16} /> Fix / Update
+            </button>
+          </div>
+        )}
+        {/* The Ask slide-over — same panel as the Studio's Ask section, so a question that comes
+            up while actually using the app ("why won't this save?") can be answered in place. */}
+        {showAskDrawer && (
+          <div className="studio-root" style={{ position: "fixed", inset: 0, zIndex: 210, display: "flex", justifyContent: "flex-end", background: "rgba(5,6,10,0.45)" }} onClick={() => setShowAskDrawer(false)}>
+            <div className="fade-in" style={{ width: 460, maxWidth: "100%", height: "100%", background: "var(--bg-elev)", borderLeft: "1px solid var(--border)", boxShadow: "-20px 0 50px -20px rgba(0,0,0,0.6)" }} onClick={(e) => e.stopPropagation()}>
+              <AskPanel applicationId={selectedId} detail={detail} variant="drawer" onClose={() => setShowAskDrawer(false)} />
+            </div>
+          </div>
         )}
       </div>
     );
   }
 
-  return (
-    <div className="studio-root" style={{ minHeight: "100vh", background: "var(--st-bg)", padding: "28px 36px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
-        <button className="studio-btn-secondary" onClick={() => navigate("/")}>← Back</button>
-        <div style={{ fontWeight: 800, fontSize: 20, flex: 1 }}>Runtime Engine</div>
-        <button className="studio-btn-primary" onClick={() => setShowNewModal(true)}>+ New Project</button>
+  // ===== The Studio workspace for one application =====
+  // One header (back to Projects, project switcher, the Describe → Review → Run flow, primary
+  // actions) over a left rail of sections. The flow stepper is the spine: an empty app starts at
+  // Describe, a generated-but-unapplied result sits at Review, and anything applied can Run.
+  const summary = detail ? summarizeApplication(detail) : null;
+  const isEmptyApp = !!detail && detail.elements.length === 0;
+  const canRun = !!detail && !isEmptyApp && (buildAppModules(detail).length > 0 || !!accountEntityEl);
+  const stage = pendingXml ? "review" : isEmptyApp || !detail ? "describe" : "run";
+  const pendingSummary = pendingXml ? summarizeXmlFragment(pendingXml, detail) : null;
+
+  const stepIndex = { describe: 0, review: 1, run: 2 }[stage];
+  const steps = [
+    { key: "describe", label: "Describe", onClick: () => goToSection("describe") },
+    { key: "review", label: "Review", onClick: () => pendingXml && goToSection("describe") },
+    { key: "run", label: "Run", onClick: () => canRun && enterAppOrDescribe(detail) },
+  ];
+
+  const navItem = (key, label, Icon, opts = {}) => {
+    const active = opts.active ?? (section === key && !activeElement);
+    return (
+      <button key={key} className={`nav-item${active ? " active" : ""}`} onClick={opts.onClick || (() => goToSection(key))} disabled={opts.disabled} style={opts.disabled ? { opacity: 0.45 } : undefined}>
+        <Icon size={16} strokeWidth={1.8} /> {label}
+        {opts.count != null && <span className="nav-count">{opts.count}</span>}
+      </button>
+    );
+  };
+
+  const sectionHeader = (title, sub, actions) => (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 22 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <h1 className="section-title">{title}</h1>
+        {sub && <p className="section-sub">{sub}</p>}
       </div>
-      <p style={{ color: "var(--st-muted)", fontSize: 13.5, marginTop: -10, marginBottom: 24, maxWidth: 680 }}>
-        A separate space for Applications built from the Entity/Relationship/Validation/DataSource/
-        Screen/Action vocabulary — not tied to any project.
-      </p>
+      {actions && <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>{actions}</div>}
+    </div>
+  );
 
-      {error && <div className="studio-card" style={{ padding: 18, color: "var(--st-danger)", fontSize: 13.5, marginBottom: 20 }}>{error}</div>}
+  const examples = [
+    "Customers, orders and products. An order belongs to a customer and has line items with quantity and price.",
+    "Employees, departments and leave requests with an approval status. End date can't be before start date.",
+    "Users sign up and log in. Admins can manage everything; regular users only see their own records.",
+  ];
 
-      {showNewModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }} onClick={closeNewModal}>
-          <div className="studio-card" style={{ width: 420, padding: 24 }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 4 }}>New Project</div>
-            <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 16 }}>
-              Give it a name — you'll describe what it does next.
-            </p>
-            <label style={{ fontSize: 12.5, fontWeight: 600, display: "block", marginBottom: 4 }}>Project name</label>
-            <input
-              className="studio-input" autoFocus value={newName} onChange={(e) => setNewName(e.target.value)}
-              placeholder="Insurance Claims Management" style={{ width: "100%", marginBottom: 12 }}
-              onKeyDown={(e) => { if (e.key === "Enter" && newName.trim()) handleCreate(); }}
-            />
-            {createError && <div style={{ color: "var(--st-danger)", fontSize: 12.5, marginBottom: 12 }}>{createError}</div>}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button className="studio-btn-primary" onClick={handleCreate} disabled={creating || !newName.trim()} style={{ flex: 1 }}>
-                {creating ? "Creating…" : "Create"}
-              </button>
-              <button className="studio-btn-secondary" onClick={closeNewModal}>Cancel</button>
-            </div>
+  return (
+    <div className="studio-root" style={{ height: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)", overflow: "hidden" }}>
+      {/* ===== Header ===== */}
+      <header style={{ height: 60, flexShrink: 0, display: "flex", alignItems: "center", gap: 12, padding: "0 18px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)" }}>
+        <button className="studio-btn-ghost studio-btn-sm" onClick={() => navigate("/")} title="All projects"><ArrowLeft size={15} /> Projects</button>
+        <div style={{ width: 1, height: 22, background: "var(--border)" }} />
+        <BrandMark size={28} />
+        <div style={{ position: "relative", minWidth: 0 }}>
+          <select
+            className="studio-select"
+            value={selectedId || ""}
+            onChange={(e) => navigate(`/runtime-engine?id=${e.target.value}`)}
+            title="Switch project"
+            style={{ width: "auto", maxWidth: 260, background: "transparent", border: "1px solid transparent", fontWeight: 700, fontSize: 14.5, padding: "6px 28px 6px 8px", appearance: "none", cursor: "pointer" }}
+          >
+            {!applications?.some((a) => a.id === selectedId) && <option value={selectedId || ""}>{detail?.name || "Loading…"}</option>}
+            {(applications || []).map((a) => <option key={a.id} value={a.id} style={{ background: "#131722" }}>{a.name}</option>)}
+          </select>
+          <ChevronDown size={14} style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", color: "var(--muted)", pointerEvents: "none" }} />
+        </div>
+
+        {/* Flow stepper */}
+        <div style={{ flex: 1, display: "flex", justifyContent: "center", minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 999, padding: 4 }}>
+            {steps.map((s, i) => {
+              const done = i < stepIndex;
+              const current = i === stepIndex;
+              return (
+                <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  {i > 0 && <ChevronRight size={14} style={{ color: "#3c445c" }} />}
+                  <button
+                    onClick={s.onClick}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 7, padding: "5px 12px 5px 6px", borderRadius: 999, border: "none", cursor: "pointer",
+                      background: current ? "var(--accent-soft)" : "transparent", color: current ? "var(--text)" : done ? "var(--text-2)" : "var(--muted)",
+                      fontSize: 12.5, fontWeight: current ? 700 : 500,
+                    }}
+                  >
+                    <span style={{
+                      width: 20, height: 20, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700,
+                      background: current ? "var(--ai-gradient)" : done ? "var(--success-soft)" : "var(--surface-3)", color: current ? "#fff" : done ? "var(--success)" : "var(--muted)",
+                    }}>
+                      {done ? <Check size={12} strokeWidth={3} /> : i + 1}
+                    </span>
+                    {s.label}
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
-      )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "280px 1fr", gap: 24, alignItems: "start" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {applications === null && <div style={{ color: "var(--st-muted)", fontSize: 13.5 }}>Loading…</div>}
-          {applications?.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13.5 }}>No applications yet.</div>}
-          {applications?.map((a) => (
-            <div
-              key={a.id}
-              className="studio-card"
-              onClick={() => selectApplication(a.id)}
-              style={{
-                padding: 14, cursor: "pointer", transition: "box-shadow 0.12s, transform 0.12s",
-                border: selectedId === a.id ? "1px solid var(--st-accent)" : "1px solid var(--st-border)",
-                boxShadow: selectedId === a.id ? "0 2px 8px rgba(0,0,0,0.08)" : "none",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 2px 10px rgba(0,0,0,0.1)"; e.currentTarget.style.transform = "translateY(-1px)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.boxShadow = selectedId === a.id ? "0 2px 8px rgba(0,0,0,0.08)" : "none"; e.currentTarget.style.transform = "none"; }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>{a.name}</div>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); downloadApplicationXml(a); }}
-                    title="Download XML"
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--st-muted)", opacity: 0.8, padding: 0, fontSize: 13, display: "flex" }}
-                  >
-                    <Download size={14} />
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); deleteApplication(a.id); }}
-                    title="Delete"
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--st-danger)", opacity: 0.7, padding: 0, fontSize: 13 }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-              <div style={{ fontSize: 11.5, color: "var(--st-muted)", marginTop: 4 }}>
-                {Object.entries(a.elementCounts || {}).map(([tag, count]) => `${tag}: ${count}`).join(" · ") || "No elements"}
-              </div>
-            </div>
-          ))}
-        </div>
+        <button className="studio-btn-ghost studio-btn-sm" onClick={() => detail && downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail))} disabled={!detail || isEmptyApp} title="Download the application XML">
+          <Download size={14} /> XML
+        </button>
+        <button className="studio-btn-secondary studio-btn-sm" onClick={() => goToSection("ask")} disabled={!detail || isEmptyApp}>
+          <MessageSquareText size={14} /> Ask
+        </button>
+        <button className="studio-btn-primary" onClick={() => enterAppOrDescribe(detail)} disabled={!canRun} title={canRun ? "Open the running application" : "Describe and apply the app first"}>
+          <Play size={14} fill="currentColor" /> Run app
+        </button>
+      </header>
 
-        <div className="studio-card" style={{ minHeight: 400 }}>
-          {!selectedId && (
-            <div style={{ padding: 60, textAlign: "center", color: "var(--st-muted)" }}>Select an application on the left.</div>
+      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        {/* ===== Left rail ===== */}
+        <nav style={{ width: 228, flexShrink: 0, borderRight: "1px solid var(--border)", background: "var(--bg-elev)", padding: "8px 10px 12px", overflowY: "auto", display: "flex", flexDirection: "column" }}>
+          <div style={{ flex: 1 }}>
+            <div className="nav-group-label" style={{ marginTop: 10 }}>Workspace</div>
+            {navItem("overview", "Overview", LayoutDashboard)}
+            {navItem("describe", isEmptyApp ? "Describe app" : "AI builder", Sparkles)}
+            {navItem("ask", "Ask about app", MessageSquareText, { disabled: isEmptyApp })}
+            {navItem("run", "Run app", Play, { onClick: () => enterAppOrDescribe(detail), disabled: !canRun, active: false })}
+
+            <div className="nav-group-label">Explore</div>
+            {navItem("er", "Data model", Network, { disabled: isEmptyApp })}
+            {navItem("xml", "Full XML", FileCode2, { disabled: isEmptyApp })}
+            {navItem("audit", "Audit log", ShieldCheck)}
+
+            {detail && !isEmptyApp && (
+              <>
+                <div className="nav-group-label">Elements</div>
+                {ELEMENT_TAGS.map((tag) => {
+                  const count = summary.counts[tag] || 0;
+                  // The optional, at-most-one-of tags only earn a nav entry once they exist.
+                  if (count === 0 && ["Theme", "Session", "Auditing", "AutoNumber"].includes(tag)) return null;
+                  const meta = TAG_META[tag];
+                  return navItem(`el-${tag}`, meta.label, meta.icon, {
+                    count,
+                    active: section === "elements" && activeTag === tag,
+                    onClick: () => { setSection("elements"); setActiveTag(tag); setActiveElement(null); },
+                  });
+                })}
+              </>
+            )}
+          </div>
+          {selectedId && (
+            <button className="nav-item" onClick={() => deleteApplication(selectedId)} style={{ color: "var(--danger)", marginTop: 12 }}>
+              <XIcon size={16} /> Delete project
+            </button>
           )}
-          {selectedId && detailLoading && <div style={{ padding: 60, textAlign: "center", color: "var(--st-muted)" }}>Loading…</div>}
-          {selectedId && !detailLoading && detail && (
-            <div style={{ display: "flex", height: "100%" }}>
-              {!needsLoginGate && (
-                <div style={{ width: 160, borderRight: "1px solid var(--st-border)", padding: 12 }}>
-                  {buildAppModules(detail).length > 0 && (
-                    <div
-                      onClick={() => enterAppOrDescribe(detail)}
-                      style={{
-                        padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 10,
-                        fontWeight: 700, background: "var(--st-accent)", color: "#fff",
-                        borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
-                      }}
-                    >
-                      ▶ Run
-                    </div>
-                  )}
-                  <div
-                    onClick={() => { setShowDescribePanel(true); setShowFullXml(false); setShowErMap(false); setActiveElement(null); }}
-                    style={{
-                      padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 2,
-                      fontWeight: 600, background: showDescribePanel ? "var(--st-accent)" : "transparent",
-                      color: showDescribePanel ? "#fff" : "inherit",
-                    }}
-                  >
-                    ✍️ Describe
-                  </div>
-                  <div
-                    onClick={() => { setShowErMap(true); setShowFullXml(false); setShowDescribePanel(false); setActiveElement(null); }}
-                    style={{
-                      padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 2,
-                      fontWeight: 600, background: showErMap ? "var(--st-accent)" : "transparent",
-                      color: showErMap ? "#fff" : "inherit",
-                    }}
-                  >
-                    🗺️ ER Map
-                  </div>
-                  <div
-                    onClick={() => { setShowFullXml(true); setShowErMap(false); setShowAuditLog(false); setShowDescribePanel(false); setActiveElement(null); }}
-                    style={{
-                      padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 2,
-                      fontWeight: 600, background: showFullXml ? "var(--st-accent)" : "transparent",
-                      color: showFullXml ? "#fff" : "inherit",
-                    }}
-                  >
-                    📄 Full XML
-                  </div>
-                  <div
-                    onClick={() => { setShowAuditLog(true); setShowFullXml(false); setShowErMap(false); setShowDescribePanel(false); setActiveElement(null); loadAuditLog(); }}
-                    style={{
-                      padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 10,
-                      fontWeight: 600, background: showAuditLog ? "var(--st-accent)" : "transparent",
-                      color: showAuditLog ? "#fff" : "inherit", borderBottom: "1px solid var(--st-border)", paddingBottom: 12,
-                    }}
-                  >
-                    🛡️ Audit Log
-                  </div>
-                  {ELEMENT_TAGS.map((tag) => (
-                    <div
-                      key={tag}
-                      onClick={() => { setActiveTag(tag); setActiveElement(null); setShowFullXml(false); setShowErMap(false); setShowAuditLog(false); setShowDescribePanel(false); }}
-                      style={{
-                        padding: "7px 10px", borderRadius: 6, cursor: "pointer", fontSize: 13, marginBottom: 2,
-                        background: !showFullXml && !showErMap && !showAuditLog && !showDescribePanel && activeTag === tag ? "var(--st-accent)" : "transparent",
-                        color: !showFullXml && !showErMap && !showAuditLog && !showDescribePanel && activeTag === tag ? "#fff" : "inherit",
-                      }}
-                    >
-                      {tag} ({detail.elements.filter((e) => e.tag === tag).length})
-                    </div>
-                  ))}
+        </nav>
+
+        {/* ===== Content ===== */}
+        <main style={{ flex: 1, minWidth: 0, overflowY: section === "ask" ? "hidden" : "auto" }}>
+          <div style={{ maxWidth: section === "ask" ? 920 : 1120, margin: "0 auto", padding: "28px 32px 64px", height: section === "ask" ? "100%" : "auto", paddingBottom: section === "ask" ? 24 : 64, display: section === "ask" ? "flex" : "block", flexDirection: "column" }}>
+            {error && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "var(--danger-soft)", border: "1px solid rgba(248,113,113,0.3)", color: "var(--danger)", borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 18 }}>
+                <span style={{ flex: 1 }}>{error}</span>
+                <button className="studio-btn-ghost studio-btn-sm" onClick={() => setError("")}><XIcon size={13} /></button>
+              </div>
+            )}
+
+            {(detailLoading || !detail) && !error && (
+              <div>
+                <div className="skeleton" style={{ height: 28, width: 260, marginBottom: 14 }} />
+                <div className="skeleton" style={{ height: 14, width: 420, marginBottom: 28 }} />
+                <div className="skeleton" style={{ height: 160, borderRadius: 14 }} />
+              </div>
+            )}
+
+            {/* ----- Overview ----- */}
+            {detail && !detailLoading && section === "overview" && !activeElement && (
+              isEmptyApp ? (
+                <div className="studio-card fade-in" style={{ padding: "48px 32px", textAlign: "center" }}>
+                  <div className="ai-mark" style={{ width: 46, height: 46, borderRadius: 13, margin: "0 auto 16px" }}><Sparkles size={22} /></div>
+                  <div style={{ fontWeight: 700, fontSize: 18 }}>{detail.name} is empty</div>
+                  <div style={{ color: "var(--muted)", fontSize: 13.5, marginTop: 6, marginBottom: 20 }}>Describe what it should do and the AI will design its data model, screens and rules.</div>
+                  <button className="studio-btn-ai" onClick={() => goToSection("describe")}><Sparkles size={15} /> Describe your app</button>
                 </div>
-              )}
-              <div style={{ flex: 1, padding: 16 }}>
-                {accountEntityEl && loggedIn && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14, padding: "8px 12px", background: "rgba(0,0,0,0.04)", borderRadius: 6, fontSize: 12.5 }}>
-                    <span>Signed in as <strong>{loggedInIdentity}</strong></span>
+              ) : (
+                <div className="fade-in">
+                  {/* Hero */}
+                  <div style={{ position: "relative", overflow: "hidden", borderRadius: 16, border: "1px solid var(--border)", background: "radial-gradient(120% 140% at 0% 0%, rgba(139,124,248,0.18) 0%, rgba(19,23,34,0) 55%), radial-gradient(90% 120% at 100% 100%, rgba(56,214,240,0.10) 0%, rgba(19,23,34,0) 60%), var(--surface)", padding: "26px 28px", display: "flex", alignItems: "center", gap: 22, flexWrap: "wrap" }}>
+                    <div style={{ width: 56, height: 56, borderRadius: 14, background: theme.primary, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 22, flexShrink: 0, boxShadow: `0 10px 26px -10px ${theme.primary}` }}>
+                      {detail.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 240 }}>
+                      <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: "-0.02em" }}>{detail.name}</div>
+                      <div style={{ color: "var(--text-2)", fontSize: 13.5, marginTop: 6, lineHeight: 1.55 }}>
+                        {summary.entities.length} entit{summary.entities.length === 1 ? "y" : "ies"}, {summary.screens.length} screen{summary.screens.length === 1 ? "" : "s"} and {summary.validations.length} validation rule{summary.validations.length === 1 ? "" : "s"}
+                        {summary.hasAccounts ? " · user accounts with sign-in" : ""}
+                        {summary.roles.length > 0 ? ` · ${summary.roles.length} role${summary.roles.length === 1 ? "" : "s"}` : ""}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 12 }}>
+                        <span style={{ fontSize: 11.5, color: "var(--muted)", marginRight: 2 }}>Theme</span>
+                        {[theme.primary, theme.accent, theme.background].map((c, i) => (
+                          <span key={i} title={c} style={{ width: 16, height: 16, borderRadius: 5, background: c, border: "1px solid rgba(255,255,255,0.15)" }} />
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button className="studio-btn-secondary" onClick={() => goToSection("describe")}><Sparkles size={15} /> Describe a change</button>
+                      <button className="studio-btn-secondary" onClick={() => goToSection("ask")}><MessageSquareText size={15} /> Ask</button>
+                      <button className="studio-btn-primary" onClick={() => enterAppOrDescribe(detail)} disabled={!canRun}><Play size={14} fill="currentColor" /> Run app</button>
+                    </div>
+                  </div>
+
+                  {/* Stats */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 12, marginTop: 16 }}>
+                    {["Entity", "Relationship", "Screen", "Validation", "Action", "DataSource"].map((tag) => {
+                      const Icon = TAG_META[tag].icon;
+                      return (
+                        <button key={tag} className="stat-tile hover-lift" onClick={() => { setSection("elements"); setActiveTag(tag); setActiveElement(null); }} style={{ textAlign: "left", cursor: "pointer", color: "inherit" }}>
+                          <div className="stat-label"><Icon size={14} /> {TAG_META[tag].label}</div>
+                          <div className="stat-value">{summary.counts[tag] || 0}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.6fr) minmax(280px, 1fr)", gap: 16, marginTop: 24, alignItems: "start" }}>
+                    {/* Entities */}
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", marginBottom: 12 }}>
+                        <div style={{ fontWeight: 700, fontSize: 15, flex: 1 }}>Data model</div>
+                        <button className="studio-btn-ghost studio-btn-sm" onClick={() => goToSection("er")}><Network size={13} /> View diagram</button>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {summary.entities.map((e) => (
+                          <button
+                            key={e.name}
+                            className="studio-card hover-lift"
+                            onClick={() => askAbout(`Explain the ${humanize(e.name)} entity — its fields, which are required, its relationships, rules and screens.`)}
+                            title={`Ask about ${humanize(e.name)}`}
+                            style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", cursor: "pointer", textAlign: "left", color: "inherit", boxShadow: "none" }}
+                          >
+                            <div style={{ width: 34, height: 34, borderRadius: 9, background: "var(--accent-soft)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                              <ModuleIcon entity={e.name} icon={e.icon} size={16} />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, fontSize: 13.5, display: "flex", alignItems: "center", gap: 8 }}>
+                                {humanize(e.name)}
+                                {e.isAccount && <span className="studio-pill studio-pill-soft" style={{ fontSize: 10.5, padding: "1px 7px" }}>Accounts</span>}
+                              </div>
+                              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                                {e.fieldCount} field{e.fieldCount === 1 ? "" : "s"} · {e.requiredCount} required · {e.screenCount} screen{e.screenCount === 1 ? "" : "s"} · {e.validationCount} rule{e.validationCount === 1 ? "" : "s"}
+                              </div>
+                            </div>
+                            <MessageSquareText size={15} style={{ color: "var(--muted)", flexShrink: 0 }} />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Ask teaser */}
+                    <div className="studio-card" style={{ padding: 18, boxShadow: "none" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                        <div className="ai-mark" style={{ width: 28, height: 28, borderRadius: 8 }}><MessageSquareText size={14} /></div>
+                        <div style={{ fontWeight: 700, fontSize: 14.5 }}>Ask about this app</div>
+                      </div>
+                      <div style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.55, marginBottom: 14 }}>
+                        Plain-English answers about entities, fields, rules, screens and access — straight from the app's definition.
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {["Give me a plain-English overview of this app", "What validation rules are enforced, and when?", "List the screens and what each one is for"].map((q) => (
+                          <button key={q} className="chip" onClick={() => askAbout(q)} style={{ borderRadius: 9, justifyContent: "flex-start" }}>
+                            <Sparkles size={12} style={{ color: "var(--accent)", flexShrink: 0 }} /> {q}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            )}
+
+            {/* ----- Describe / AI builder ----- */}
+            {detail && !detailLoading && section === "describe" && !activeElement && (
+              <div className="fade-in" style={{ maxWidth: 820 }}>
+                {sectionHeader(
+                  isEmptyApp ? "Describe your app" : "Describe a change",
+                  isEmptyApp
+                    ? "Explain it in plain English — the data you track, how things relate, and any rules. One entity or the whole thing; you can keep adding later."
+                    : "Say what to add or fix. Only what you describe is touched — every other screen, entity and all existing data stay exactly as they are."
+                )}
+
+                <div className="composer">
+                  <textarea
+                    rows={6}
+                    value={genDescription}
+                    onChange={(e) => setGenDescription(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleGenerate(); }}
+                    placeholder={isEmptyApp
+                      ? "An insurance claims app with policies, claims and adjusters. Each policy belongs to a customer and can have many claims; each claim is assigned to one adjuster and has a status and amount."
+                      : "Add a 'notes' field to Attendance, and stop the Timesheet form accepting negative hours."}
+                    disabled={generating}
+                  />
+                  <div className="composer-bar">
+                    <span style={{ fontSize: 11.5, color: "var(--muted)", flex: 1 }}>Ctrl+Enter to generate</span>
+                    <button className="studio-btn-ai" onClick={() => handleGenerate()} disabled={generating || !genDescription.trim()}>
+                      {generating ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Generating…</> : <><Sparkles size={15} /> {isEmptyApp ? "Generate app" : "Generate changes"}</>}
+                    </button>
+                  </div>
+                </div>
+                {isEmptyApp && !pendingXml && !generating && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                    {examples.map((ex) => (
+                      <button key={ex} className="chip" onClick={() => setGenDescription(ex)} style={{ maxWidth: 360 }}>{ex.length > 70 ? `${ex.slice(0, 68)}…` : ex}</button>
+                    ))}
+                  </div>
+                )}
+
+                {generating && (
+                  <div className="studio-card fade-in" style={{ marginTop: 18, padding: 20, display: "flex", gap: 14, alignItems: "flex-start", boxShadow: "none" }}>
+                    <div className="ai-mark" style={{ width: 34, height: 34 }}><Sparkles size={17} /></div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>Designing {isEmptyApp ? "your app" : "the change"}…</div>
+                      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 3, marginBottom: 14 }}>Working out entities, relationships, screens and validation rules. This usually takes under a minute.</div>
+                      <div className="skeleton" style={{ height: 10, width: "92%", marginBottom: 8 }} />
+                      <div className="skeleton" style={{ height: 10, width: "74%", marginBottom: 8 }} />
+                      <div className="skeleton" style={{ height: 10, width: "58%" }} />
+                    </div>
+                  </div>
+                )}
+
+                {genError && !generating && (
+                  <div className="fade-in" style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12, background: "var(--danger-soft)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, padding: "12px 14px" }}>
+                    <span style={{ flex: 1, color: "var(--danger)", fontSize: 13 }}>{genError}</span>
+                    <button className="studio-btn-secondary studio-btn-sm" onClick={() => handleGenerate()} disabled={!genDescription.trim()}><RotateCcw size={13} /> Try again</button>
+                  </div>
+                )}
+
+                {pendingXml && !generating && (
+                  <div className="studio-card fade-in" style={{ marginTop: 18, overflow: "hidden", boxShadow: "none", borderColor: "rgba(139,124,248,0.35)" }}>
+                    <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, background: "linear-gradient(90deg, rgba(139,124,248,0.10), transparent)" }}>
+                      <span className="studio-pill studio-pill-soft">Step 2 · Review</span>
+                      <div style={{ flex: 1, fontWeight: 700, fontSize: 14.5 }}>
+                        {isEmptyApp ? "Here's what will be created" : "Here's what will change"}
+                      </div>
+                      <span style={{ fontSize: 12, color: "var(--muted)" }}>{pendingSummary.total} element{pendingSummary.total === 1 ? "" : "s"}</span>
+                    </div>
+                    <div style={{ padding: 18 }}>
+                      {pendingSummary.error ? (
+                        <div style={{ fontSize: 13, color: "var(--warning)" }}>Couldn't summarize this result — check the XML below before applying.</div>
+                      ) : (
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 12 }}>
+                          {pendingSummary.groups.map((g) => {
+                            const meta = TAG_META[g.tag] || { label: g.tag, icon: FileText };
+                            const Icon = meta.icon;
+                            return (
+                              <div key={g.tag} style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, fontWeight: 600, color: "var(--text-2)", marginBottom: 8 }}>
+                                  <Icon size={14} style={{ color: "var(--accent)" }} /> {meta.label} <span style={{ color: "var(--muted)", fontWeight: 500 }}>· {g.items.length}</span>
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                                  {g.items.map((it) => (
+                                    <span key={it.name} className="studio-pill" style={{ fontSize: 11.5, fontWeight: 500, padding: "2px 8px", background: it.isNew ? "var(--success-soft)" : "var(--warning-soft)", color: it.isNew ? "var(--success)" : "var(--warning)" }} title={it.isNew ? "New" : "Updated"}>
+                                      {it.isNew ? "+" : "~"} {humanize(it.name)}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {!isEmptyApp && !pendingSummary.error && (
+                        <div style={{ display: "flex", gap: 14, fontSize: 11.5, color: "var(--muted)", marginTop: 12 }}>
+                          <span><span style={{ color: "var(--success)" }}>+</span> new</span>
+                          <span><span style={{ color: "var(--warning)" }}>~</span> updated (replaced in full)</span>
+                          <span>Everything not listed stays exactly as it is.</span>
+                        </div>
+                      )}
+                      {showXmlInReview && <pre className="code-block" style={{ marginTop: 14, maxHeight: "42vh" }}>{pendingXml}</pre>}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16 }}>
+                        <button className="studio-btn-ai" onClick={handleApplyDescription} disabled={applying}>
+                          {applying ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Applying…</> : <><Check size={15} strokeWidth={2.5} /> {isEmptyApp ? "Apply & run app" : "Apply changes"}</>}
+                        </button>
+                        <button className="studio-btn-secondary" onClick={() => { setPendingXml(null); setShowXmlInReview(false); }} disabled={applying}>Discard</button>
+                        <div style={{ flex: 1 }} />
+                        <button className="studio-btn-ghost studio-btn-sm" onClick={() => setShowXmlInReview((v) => !v)}>
+                          <FileCode2 size={13} /> {showXmlInReview ? "Hide XML" : "View XML"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ----- Ask ----- */}
+            {detail && !detailLoading && section === "ask" && !activeElement && (
+              <AskPanel applicationId={selectedId} detail={detail} seedQuestion={askSeed} onSeedConsumed={() => setAskSeed(null)} />
+            )}
+
+            {/* ----- Data model (ER map) ----- */}
+            {detail && !detailLoading && section === "er" && !activeElement && (() => {
+              const erTables = applicationToErTables(detail);
+              // Every non-Entity node that's connected to an Entity (same FOR_ENTITY edges the
+              // graph already carries — see applicationStore.ts's linkElements) — shown as its
+              // own table so these connections are visible from inside the Studio, not just by
+              // opening Neo4j Browser directly.
+              const validationRows = detail.elements
+                .filter((e) => e.tag === "Validation")
+                .map((e) => { const v = parseValidationForRun(e.xml); return [v.entity, v.id, v.when, v.onViolation, v.test || "—", v.message || "—"]; });
+              const screenRows = detail.elements
+                .filter((e) => e.tag === "Screen")
+                .map((e) => { const s = parseScreenForRun(e.xml); return [s.entity || "—", e.name, s.grid ? "Browse (grid)" : "Form", s.requiresRole ? s.requiresRole.join(", ") : "Everyone"]; });
+              const actionRows = detail.elements
+                .filter((e) => e.tag === "Action")
+                .map((e) => { const a = parseActionForRun(e.xml); return [a.entity, e.name, a.steps.join(" → ") || "—"]; });
+              const dataSourceRows = detail.elements
+                .filter((e) => e.tag === "DataSource")
+                .map((e) => { const d = parseDataSourceForRun(e.xml); return [d.entity || "—", e.name]; });
+              const entityFieldsByName = new Map(detail.elements.filter((e) => e.tag === "Entity").map((e) => [e.name, parseEntityForRun(e.xml).fields]));
+              return (
+                <div className="fade-in">
+                  {sectionHeader("Data model", "Every entity, how they connect, and the screens, rules and lookups attached to each.",
+                    <button className="studio-btn-secondary studio-btn-sm" onClick={() => askAbout("How are the entities related to each other?")}><MessageSquareText size={13} /> Explain relationships</button>)}
+                  <div className="studio-card" style={{ padding: 8, boxShadow: "none" }}>
+                    <ERDiagram entities={erTables} emptyMessage="No entities yet — describe the application first." />
+                  </div>
+                  {erTables.tables.length > 0 && (
+                    <>
+                      <div style={{ fontWeight: 700, fontSize: 14, margin: "28px 0 10px" }}>Fields</div>
+                      <div className="table-wrap">
+                        <table className="data-table">
+                          <thead><tr>{["Entity", "Field", "Type", "Key", "Required", "Related to"].map((h) => <th key={h}>{h}</th>)}</tr></thead>
+                          <tbody>
+                            {erTables.tables.flatMap((t) =>
+                              t.columns.map((c, i) => (
+                                <tr key={`${t.name}.${c.name}`}>
+                                  <td style={{ color: "var(--text)", fontWeight: i === 0 ? 600 : 400 }}>{i === 0 ? t.name : ""}</td>
+                                  <td style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}>{c.name}</td>
+                                  <td><span className="studio-pill studio-pill-muted" style={{ fontSize: 11, padding: "1px 8px" }}>{c.type}</span></td>
+                                  <td>{c.pk ? <KeyRound size={13} style={{ color: "var(--warning)" }} /> : ""}</td>
+                                  <td>{entityFieldsByName.get(t.name)?.find((f) => f.name === c.name)?.required ? <Check size={14} style={{ color: "var(--success)" }} /> : ""}</td>
+                                  <td>{c.fk || ""}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <ElementTable
+                        title="Validations"
+                        columns={["Entity", "Rule", "When", "On violation", "Condition", "Message"]}
+                        rows={validationRows}
+                        emptyLabel="No validations yet — every entity can have one or more, each connected to it."
+                      />
+                      <ElementTable
+                        title="Screens"
+                        columns={["Entity", "Screen", "Type", "Access"]}
+                        rows={screenRows}
+                        emptyLabel="No screens yet."
+                      />
+                      <ElementTable
+                        title="Actions"
+                        columns={["Entity", "Action", "Steps"]}
+                        rows={actionRows}
+                        emptyLabel="No custom actions yet — save/delete/cancel/openRecord are built in and don't need one."
+                      />
+                      <ElementTable
+                        title="Data sources"
+                        columns={["Entity", "Data source"]}
+                        rows={dataSourceRows}
+                        emptyLabel="No data sources yet — these power dropdown options and FK lookups."
+                      />
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* ----- Full XML ----- */}
+            {detail && !detailLoading && section === "xml" && !activeElement && (
+              <div className="fade-in">
+                {sectionHeader("Full XML", "The whole application definition in one document — what the runtime engine actually runs.", (
+                  <>
+                    <CopyTextButton text={buildFullXml(detail)} />
+                    <button className="studio-btn-secondary studio-btn-sm" onClick={() => downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail))}><Download size={13} /> Download</button>
+                  </>
+                ))}
+                <pre className="code-block" style={{ maxHeight: "calc(100vh - 230px)" }}>{buildFullXml(detail)}</pre>
+              </div>
+            )}
+
+            {/* ----- Audit log ----- */}
+            {detail && !detailLoading && section === "audit" && !activeElement && (
+              <div className="fade-in">
+                {sectionHeader("Audit log", "Logins, registrations, deletes, restores and access denials for this application — most recent first.",
+                  <button className="studio-btn-secondary studio-btn-sm" onClick={loadAuditLog}><RotateCcw size={13} /> Refresh</button>)}
+                {auditEvents === null && <div className="skeleton" style={{ height: 120, borderRadius: 10 }} />}
+                {auditEvents?.length === 0 && (
+                  <div className="studio-card" style={{ padding: "36px 24px", textAlign: "center", color: "var(--muted)", fontSize: 13, boxShadow: "none" }}>
+                    <ShieldCheck size={26} style={{ marginBottom: 8 }} /><div>No events yet.</div>
+                  </div>
+                )}
+                {auditEvents && auditEvents.length > 0 && (
+                  <div className="table-wrap">
+                    <table className="data-table">
+                      <thead><tr><th>When</th><th>Event</th><th>Who</th><th>Detail</th></tr></thead>
+                      <tbody>
+                        {auditEvents.map((e, i) => (
+                          <tr key={i}>
+                            <td style={{ whiteSpace: "nowrap", color: "var(--muted)" }}>{new Date(e.at).toLocaleString()}</td>
+                            <td><span className="studio-pill studio-pill-muted" style={{ fontSize: 11.5 }}>{e.type}</span></td>
+                            <td>{e.identity || "—"}</td>
+                            <td>{e.detail || "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ----- Elements of one tag ----- */}
+            {detail && !detailLoading && section === "elements" && !activeElement && (
+              <div className="fade-in">
+                {sectionHeader(TAG_META[activeTag]?.label || activeTag, `${elementsByTag.length} ${activeTag} element${elementsByTag.length === 1 ? "" : "s"} in this application.${activeTag === "Screen" ? " Open one to preview it." : " Open one to see its definition."}`)}
+                {elementsByTag.length === 0 ? (
+                  <div className="studio-card" style={{ padding: "36px 24px", textAlign: "center", color: "var(--muted)", fontSize: 13, boxShadow: "none" }}>No {TAG_META[activeTag]?.label.toLowerCase() || activeTag} yet.</div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+                    {elementsByTag.map((el) => {
+                      const Icon = TAG_META[el.tag]?.icon || FileText;
+                      return (
+                        <button key={el.name} className="studio-card hover-lift" onClick={() => openElement(el)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", cursor: "pointer", textAlign: "left", color: "inherit", boxShadow: "none" }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--surface-2)", color: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon size={15} /></div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{el.name}</div>
+                            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{describeElement(el)}</div>
+                          </div>
+                          <ChevronRight size={15} style={{ color: "var(--muted)", flexShrink: 0 }} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ----- One open element ----- */}
+            {detail && activeElement && (
+              <div className="fade-in">
+                {accountEntityEl && loggedIn && activeElement.tag === "Screen" && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14, padding: "8px 12px", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, fontSize: 12.5 }}>
+                    <span style={{ flex: 1 }}>Signed in to the app as <strong>{loggedInIdentity}</strong></span>
                     <button
-                      className="studio-btn-secondary" style={{ padding: "3px 10px", fontSize: 12 }}
+                      className="studio-btn-secondary studio-btn-sm"
                       onClick={() => {
                         const cpEl = detail.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
                         if (cpEl) openElement(cpEl); else setError("No ChangePassword screen found.");
                       }}
                     >
-                      Change Password
+                      Change password
                     </button>
-                    <button className="studio-btn-secondary" style={{ padding: "3px 10px", fontSize: 12 }} onClick={handleLogout} disabled={loggingOut}>
-                      {loggingOut ? "Logging out…" : "Logout"}
-                    </button>
+                    <button className="studio-btn-secondary studio-btn-sm" onClick={handleLogout} disabled={loggingOut}>{loggingOut ? "Logging out…" : "Log out"}</button>
                   </div>
                 )}
-                {showDescribePanel && !needsLoginGate && (
+                {activeElement.tag !== "Screen" && (
                   <div>
-                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>
-                      {detail.elements.length === 0 ? "Describe your application" : "Add to this application"}
-                    </div>
-                    <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 12, maxWidth: 560 }}>
-                      {detail.elements.length === 0
-                        ? "Describe it in plain English — one entity, or the whole thing, screens now or later."
-                        : "Describe what to add or change — only that gets touched, everything else and all existing data stay exactly as they are."}
-                    </p>
-                    <textarea
-                      className="studio-textarea"
-                      value={genDescription}
-                      onChange={(e) => setGenDescription(e.target.value)}
-                      placeholder="An insurance claims app with policies, claims, and adjusters. Each policy belongs to a customer and can have many claims; each claim is assigned to one adjuster and has a status and amount."
-                      rows={5}
-                      style={{ width: "100%", maxWidth: 640, marginBottom: 8, resize: "vertical" }}
-                    />
-                    <div>
-                      <button className="studio-btn-primary" onClick={handleGenerate} disabled={generating || !genDescription.trim()}>
-                        {generating ? "Generating…" : "Generate"}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                      <button className="studio-btn-secondary studio-btn-sm" onClick={() => setActiveElement(null)}><ArrowLeft size={13} /> Back</button>
+                      <span className="studio-pill studio-pill-soft">{activeElement.tag}</span>
+                      <div style={{ fontWeight: 700, fontSize: 16, flex: 1 }}>{activeElement.name}</div>
+                      <CopyTextButton text={activeElement.xml} />
+                      <button className="studio-btn-secondary studio-btn-sm" onClick={() => askAbout(`Explain the ${activeElement.tag} "${activeElement.name}" in plain English — what it does and how it affects the app.`)}>
+                        <MessageSquareText size={13} /> Explain this
                       </button>
                     </div>
-                    {genError && <div style={{ color: "var(--st-danger)", fontSize: 12.5, marginTop: 8 }}>{genError}</div>}
-                    {pendingXml && (
-                      <div style={{ marginTop: 16 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>Review before applying:</div>
-                        <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12, maxHeight: "40vh", maxWidth: 640 }}>
-                          {pendingXml}
-                        </pre>
-                        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
-                          <button className="studio-btn-primary" onClick={handleApplyDescription} disabled={applying}>
-                            {applying ? "Applying…" : "Apply"}
-                          </button>
-                          <button className="studio-btn-secondary" onClick={() => setPendingXml(null)}>Discard</button>
-                        </div>
-                      </div>
-                    )}
+                    <pre className="code-block">{activeElement.xml}</pre>
                   </div>
                 )}
-                {showErMap && !needsLoginGate && (() => {
-                  const erTables = applicationToErTables(detail);
-                  // Every non-Entity node that's connected to an Entity (same FOR_ENTITY edges the
-                  // graph already carries — see applicationStore.ts's linkElements) — shown as its
-                  // own table so these connections are visible from inside the Studio, not just by
-                  // opening Neo4j Browser directly.
-                  const validationRows = detail.elements
-                    .filter((e) => e.tag === "Validation")
-                    .map((e) => { const v = parseValidationForRun(e.xml); return [v.entity, v.id, v.when, v.onViolation, v.test || "—", v.message || "—"]; });
-                  const screenRows = detail.elements
-                    .filter((e) => e.tag === "Screen")
-                    .map((e) => { const s = parseScreenForRun(e.xml); return [s.entity || "—", e.name, s.grid ? "grid" : "form", s.requiresRole ? s.requiresRole.join(", ") : "—"]; });
-                  const actionRows = detail.elements
-                    .filter((e) => e.tag === "Action")
-                    .map((e) => { const a = parseActionForRun(e.xml); return [a.entity, e.name, a.steps.join(" → ") || "—"]; });
-                  const dataSourceRows = detail.elements
-                    .filter((e) => e.tag === "DataSource")
-                    .map((e) => { const d = parseDataSourceForRun(e.xml); return [d.entity || "—", e.name]; });
-                  return (
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Entity/Relationship Map</div>
-                      <ERDiagram entities={erTables} emptyMessage="No entities yet — describe the application first." />
-                      {erTables.tables.length > 0 && (
-                        <>
-                          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 16, fontSize: 12.5 }}>
-                            <thead>
-                              <tr style={{ background: "rgba(0,0,0,0.05)" }}>
-                                {["Entity", "Field", "Type", "Key", "Required", "Related To"].map((h) => (
-                                  <th key={h} style={{ textAlign: "left", padding: "6px 10px", fontWeight: 600 }}>{h}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {erTables.tables.flatMap((t) =>
-                                t.columns.map((c, i) => (
-                                  <tr key={`${t.name}.${c.name}`} style={{ borderBottom: "1px solid var(--st-border)" }}>
-                                    <td style={{ padding: "6px 10px" }}>{i === 0 ? t.name : ""}</td>
-                                    <td style={{ padding: "6px 10px" }}>{c.name}</td>
-                                    <td style={{ padding: "6px 10px" }}>{c.type}</td>
-                                    <td style={{ padding: "6px 10px" }}>{c.pk ? "✓" : ""}</td>
-                                    <td style={{ padding: "6px 10px" }}>{detail.elements.find((e) => e.tag === "Entity" && e.name === t.name) && parseEntityForRun(detail.elements.find((e) => e.tag === "Entity" && e.name === t.name).xml).fields.find((f) => f.name === c.name)?.required ? "✓" : ""}</td>
-                                    <td style={{ padding: "6px 10px" }}>{c.fk || ""}</td>
-                                  </tr>
-                                ))
-                              )}
-                            </tbody>
-                          </table>
-                          <ElementTable
-                            title="Validations"
-                            columns={["Entity", "Rule", "When", "On Violation", "Condition", "Message"]}
-                            rows={validationRows}
-                            emptyLabel="No validations yet — every entity can have one or more, each connected to it."
-                          />
-                          <ElementTable
-                            title="Screens"
-                            columns={["Entity", "Screen", "Type", "Requires Role"]}
-                            rows={screenRows}
-                            emptyLabel="No screens yet."
-                          />
-                          <ElementTable
-                            title="Actions"
-                            columns={["Entity", "Action", "Steps"]}
-                            rows={actionRows}
-                            emptyLabel="No custom actions yet — save/delete/cancel/openRecord are built in and don't need one."
-                          />
-                          <ElementTable
-                            title="Data Sources"
-                            columns={["Entity", "Data Source"]}
-                            rows={dataSourceRows}
-                            emptyLabel="No data sources yet — these power dropdown options and FK lookups."
-                          />
-                        </>
-                      )}
-                    </div>
-                  );
-                })()}
-                {showFullXml && (
-                  <div>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                      <div style={{ fontWeight: 700, fontSize: 14 }}>Full Application XML</div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button
-                          className="studio-btn-secondary"
-                          onClick={() => downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail))}
-                        >
-                          Download
-                        </button>
-                        <button
-                          className="studio-btn-secondary"
-                          onClick={() => navigator.clipboard?.writeText(buildFullXml(detail))}
-                        >
-                          Copy
-                        </button>
-                      </div>
-                    </div>
-                    <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12, maxHeight: "70vh" }}>
-                      {buildFullXml(detail)}
-                    </pre>
-                  </div>
-                )}
-                {showAuditLog && (
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Audit Log</div>
-                    <p style={{ fontSize: 12.5, color: "var(--st-muted)", marginTop: 0, marginBottom: 14 }}>
-                      Logins, registrations, deletes, restores, and access denials for this application — most recent first.
-                    </p>
-                    {auditEvents === null && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>Loading…</div>}
-                    {auditEvents?.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No events yet.</div>}
-                    {auditEvents && auditEvents.length > 0 && (
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                        <thead>
-                          <tr style={{ borderBottom: "1px solid var(--st-border)" }}>
-                            <th style={{ textAlign: "left", padding: "6px 10px" }}>When</th>
-                            <th style={{ textAlign: "left", padding: "6px 10px" }}>Event</th>
-                            <th style={{ textAlign: "left", padding: "6px 10px" }}>Who</th>
-                            <th style={{ textAlign: "left", padding: "6px 10px" }}>Detail</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {auditEvents.map((e, i) => (
-                            <tr key={i} style={{ borderBottom: "1px solid var(--st-border)" }}>
-                              <td style={{ padding: "6px 10px", whiteSpace: "nowrap", color: "var(--st-muted)" }}>{new Date(e.at).toLocaleString()}</td>
-                              <td style={{ padding: "6px 10px" }}>{e.type}</td>
-                              <td style={{ padding: "6px 10px" }}>{e.identity || "—"}</td>
-                              <td style={{ padding: "6px 10px" }}>{e.detail || "—"}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
-                {!showFullXml && !showErMap && !showAuditLog && !showDescribePanel && !activeElement && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {elementsByTag.length === 0 && <div style={{ color: "var(--st-muted)", fontSize: 13 }}>No {activeTag} elements.</div>}
-                    {elementsByTag.map((el) => (
-                      <div
-                        key={el.name}
-                        className="studio-card"
-                        onClick={() => openElement(el)}
-                        style={{ padding: "10px 14px", cursor: "pointer", transition: "background 0.12s" }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.03)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = ""; }}
-                      >
-                        {el.name}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {activeElement && activeElement.tag !== "Screen" && (
-                  <div>
-                    <button className="studio-btn-secondary" onClick={() => setActiveElement(null)} style={{ marginBottom: 12 }}>← Back</button>
-                    <pre style={{ background: "#13111c", color: "#e2e8f0", padding: 16, borderRadius: 8, overflow: "auto", fontSize: 12 }}>{activeElement.xml}</pre>
-                  </div>
-                )}
-                {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && renderGridScreen()}
-                {activeElement && activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && renderFormScreen()}
+                {activeElement.tag === "Screen" && screenForRun?.grid && renderGridScreen()}
+                {activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && renderFormScreen()}
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        </main>
       </div>
     </div>
   );

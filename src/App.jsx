@@ -2,7 +2,10 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import Login from "./pages/Login";
-import Dashboard from "./pages/Dashboard";
+// Old Dashboard — its project workspace was for the retired engine; replaced by Home as the
+// landing page. Kept, not deleted, in case of rollback.
+// import Dashboard from "./pages/Dashboard";
+import Home from "./pages/Home";
 import ScreenGenerator from "./pages/ScreenGenerator";
 import AdminUsage from "./pages/AdminUsage";
 import Domains from "./pages/Domains";
@@ -40,7 +43,7 @@ export default function App() {
               path="/"
               element={
                 <ProtectedRoute>
-                  <Dashboard />
+                  <Home />
                 </ProtectedRoute>
               }
             />

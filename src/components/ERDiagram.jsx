@@ -21,7 +21,15 @@ export function ERDiagram({ entities, emptyMessage }) {
     import("mermaid").then(({ default: mermaid }) => {
       mermaid.initialize({
         startOnLoad: false,
-        theme: "dark",
+        // "base" + themeVariables (rather than the stock "dark" theme) so the diagram uses the
+        // Studio's own palette from styles.css — Mermaid can't read CSS variables itself.
+        theme: "base",
+        themeVariables: {
+          darkMode: true, background: "#0e1119", fontFamily: "Inter, system-ui, sans-serif",
+          primaryColor: "#191e2c", primaryBorderColor: "#4b4390", primaryTextColor: "#e8eaf2",
+          lineColor: "#6a8cff", textColor: "#b3b9cc", tertiaryColor: "#131722",
+          attributeBackgroundColorOdd: "#131722", attributeBackgroundColorEven: "#171c29",
+        },
         er: { diagramPadding: 40, layoutDirection: "TB", minEntityWidth: 140, minEntityHeight: 80, entityPadding: 18, useMaxWidth: true },
       });
       const id = `er-${Date.now()}`;
@@ -35,17 +43,17 @@ export function ERDiagram({ entities, emptyMessage }) {
   }, [mermaidDef]);
 
   if (!mermaidDef) {
-    return <div style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>{emptyMessage || "No schema extracted yet. Go to Database Schema in Workspace to extract entities."}</div>;
+    return <div style={{ padding: 60, textAlign: "center", color: "var(--muted, #7a8299)" }}>{emptyMessage || "No schema extracted yet. Go to Database Schema in Workspace to extract entities."}</div>;
   }
   if (error) {
-    return <div style={{ padding: 24, color: "#f87171", fontSize: 13 }}>Diagram error: {error}</div>;
+    return <div style={{ padding: 24, color: "var(--danger, #f87171)", fontSize: 13 }}>Diagram error: {error}</div>;
   }
   if (!svg) {
-    return <div style={{ padding: 60, textAlign: "center", color: "#7a7a7a" }}>Rendering diagram…</div>;
+    return <div style={{ padding: 60, textAlign: "center", color: "var(--muted, #7a8299)" }}>Rendering diagram…</div>;
   }
 
   return (
-    <div ref={containerRef} style={{ padding: 24, overflow: "auto", background: "#13111c", borderRadius: 8, minHeight: 300 }}
+    <div ref={containerRef} style={{ padding: 24, overflow: "auto", background: "var(--bg-elev, #0e1119)", borderRadius: 10, minHeight: 300 }}
       dangerouslySetInnerHTML={{ __html: svg }} />
   );
 }
