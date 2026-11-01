@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Sparkles, ArrowRight, Search, Download, Trash2, Boxes, Monitor, Plus, FolderOpen } from "lucide-react";
 import api from "../api/client";
@@ -39,6 +39,8 @@ export default function Home() {
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState("");
+  const [nudge, setNudge] = useState(false);
+  const descriptionRef = useRef(null);
 
   function loadApps() {
     return api.get("/runtime-applications")
@@ -52,7 +54,11 @@ export default function Home() {
   // path really is "type what you want, press Enter".
   function create({ blank = false } = {}) {
     const text = description.trim();
-    if (!blank && !text) return;
+    if (!blank && !text) {
+      setNudge(true);
+      descriptionRef.current?.focus();
+      return;
+    }
     setCreating(true);
     setError("");
     const appName = name.trim() || (blank ? "Untitled app" : nameFromDescription(text));
@@ -92,8 +98,9 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="composer fade-in" style={{ maxWidth: 780, margin: "0 auto" }}>
+        <div className={`composer fade-in${nudge ? " composer-nudge" : ""}`} style={{ maxWidth: 780, margin: "0 auto" }} onAnimationEnd={() => setNudge(false)}>
           <textarea
+            ref={descriptionRef}
             rows={4}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
@@ -111,7 +118,7 @@ export default function Home() {
             />
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Ctrl+Enter</span>
-            <button className="studio-btn-ai" onClick={() => create()} disabled={creating || !description.trim()}>
+            <button className="studio-btn-ai" onClick={() => create()} disabled={creating}>
               {creating ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Creating…</> : <><Sparkles size={15} /> Generate app</>}
             </button>
           </div>
@@ -179,8 +186,8 @@ export default function Home() {
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 2 }} onClick={(e) => e.stopPropagation()}>
-                      <button className="studio-icon-btn" style={{ border: "none", width: 28, height: 28 }} onClick={() => download(a)} title="Download XML"><Download size={14} /></button>
-                      <button className="studio-icon-btn" style={{ border: "none", width: 28, height: 28 }} onClick={() => remove(a)} title="Delete"><Trash2 size={14} /></button>
+                      <button className="studio-icon-btn" style={{ border: "none", background: "transparent", boxShadow: "none", width: 28, height: 28 }} onClick={() => download(a)} title="Download XML"><Download size={14} /></button>
+                      <button className="studio-icon-btn" style={{ border: "none", background: "transparent", boxShadow: "none", width: 28, height: 28 }} onClick={() => remove(a)} title="Delete"><Trash2 size={14} /></button>
                     </div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

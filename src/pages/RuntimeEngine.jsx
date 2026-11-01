@@ -514,7 +514,10 @@ export default function RuntimeEngine() {
   function handleGenerate(descriptionOverride, detailOverride) {
     const description = (typeof descriptionOverride === "string" ? descriptionOverride : genDescription).trim();
     const d = detailOverride || detail;
-    if (!description) return;
+    if (!description) {
+      setGenError("Describe what you'd like to build or change first.");
+      return;
+    }
     setGenerating(true);
     setGenError("");
     setPendingXml(null);
@@ -1780,7 +1783,7 @@ export default function RuntimeEngine() {
                 rows={4}
                 style={{ width: "100%", marginBottom: 8, resize: "vertical" }}
               />
-              <button className="studio-btn-ai" onClick={() => handleGenerate()} disabled={generating || !genDescription.trim()}>
+              <button className="studio-btn-ai" onClick={() => handleGenerate()} disabled={generating}>
                 {generating ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Generating…</> : <><Sparkles size={15} /> Generate fix</>}
               </button>
               {genError && <div style={{ color: "var(--st-danger)", fontSize: 12.5, marginTop: 8 }}>{genError}</div>}
@@ -2242,7 +2245,7 @@ export default function RuntimeEngine() {
                   />
                   <div className="composer-bar">
                     <span style={{ fontSize: 11.5, color: "var(--muted)", flex: 1 }}>Ctrl+Enter to generate</span>
-                    <button className="studio-btn-ai" onClick={() => handleGenerate()} disabled={generating || !genDescription.trim()}>
+                    <button className="studio-btn-ai" onClick={() => handleGenerate()} disabled={generating}>
                       {generating ? <><span className="spinner" style={{ width: 14, height: 14 }} /> Generating…</> : <><Sparkles size={15} /> {isEmptyApp ? "Generate app" : "Generate changes"}</>}
                     </button>
                   </div>
