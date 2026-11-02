@@ -9,6 +9,10 @@
 //   tables     lines | striped | cards
 //   canvas     cool | warm | tinted             — the page background's tone
 //   auth       split | split-right | centered   — the sign-in layout
+//   style      corporate | soft | playful | editorial | glass | brutal | minimal
+//              — the design LANGUAGE: the strongest axis. Each restyles typography, cards, KPI
+//              tiles, inputs, buttons, tables, the hero and the whole sign-in composition
+//              together (runtimeApp.css .rt-style-*), so two apps never read as one template.
 //   radius, density, body/heading fonts, primary/accent colors
 //
 // Where it comes from, in order:
@@ -17,8 +21,12 @@
 //      one of several variants/palettes/font pairs picked from a hash of the app's name — so
 //      apps in the same domain still differ, and an app always looks the same on every visit.
 
+import { validateTokens } from "./designTokens";
+
 export const SHELLS = ["sidebar", "topnav", "rail"];
+export const STYLES = ["corporate", "soft", "playful", "editorial", "glass", "brutal", "minimal"];
 const ENUMS = {
+  style: STYLES,
   shell: SHELLS,
   nav: ["light", "tinted", "solid", "dark"],
   appearance: ["light", "dark"],
@@ -38,6 +46,7 @@ export const FONT_WHITELIST = new Set([
 ]);
 
 const DOMAIN_KEYWORDS = {
+  fintech: /upi|wallet|sav(e|er|ing)|expense|budget|spend|goal|pocket|personal finance|money/i,
   healthcare: /patient|doctor|physician|nurse|appointment|clinic|hospital|medical|prescription|diagnos|ward|pharmac|lab ?test|health/i,
   finance: /invoice|payment|loan|transaction|budget|expense|ledger|bank|account(?!ing)|insurance|claim|policy|premium|tax|payroll|fund|portfolio/i,
   education: /student|course|class|teacher|instructor|exam|grade|enrol|school|lesson|semester|curriculum|assignment|tutor/i,
@@ -55,6 +64,15 @@ const V = (shell, nav, header, cards, tables, canvas, auth, radius, density = "c
   ({ shell, nav, header, cards, tables, canvas, auth, radius, density, appearance });
 
 export const DOMAIN_PRESETS = {
+  fintech: {
+    palettes: [["#7c3aed", "#22d3ee"], ["#0ea5e9", "#a855f7"], ["#10b981", "#6366f1"]],
+    fonts: [["Sora", null], ["Outfit", null], ["Plus Jakarta Sans", null]],
+    variants: [
+      V("rail", "dark", "banner", "elevated", "cards", "cool", "centered", 16, "comfortable", "dark"),
+      V("topnav", "dark", "split", "elevated", "lines", "tinted", "centered", 18, "comfortable", "dark"),
+      V("sidebar", "dark", "banner", "soft", "cards", "cool", "centered", 14, "comfortable", "dark"),
+    ],
+  },
   healthcare: {
     palettes: [["#0f766e", "#0ea5e9"], ["#0369a1", "#14b8a6"], ["#059669", "#6366f1"]],
     fonts: [["Plus Jakarta Sans", null], ["Nunito Sans", null], ["Figtree", null]],
@@ -193,6 +211,36 @@ export function detectDomain(detail) {
   return best;
 }
 
+// Which design languages fit each domain — distinct sets, so neighbouring domains (hotel vs
+// property, coaching vs personal finance) can't land on the same look.
+export const DOMAIN_STYLES = {
+  healthcare: ["soft", "minimal"],
+  fintech: ["glass"],
+  finance: ["corporate", "minimal"],
+  education: ["playful", "soft"],
+  hr: ["soft", "corporate"],
+  commerce: ["playful", "brutal"],
+  logistics: ["corporate", "brutal"],
+  media: ["glass"],
+  crm: ["brutal", "minimal"],
+  property: ["minimal", "corporate"],
+  hospitality: ["editorial"],
+  projects: ["brutal", "minimal"],
+  general: ["soft", "playful", "minimal", "corporate", "brutal"],
+};
+
+// What each design language needs from the other axes to read as itself — e.g. glass is only
+// glass on a dark canvas, editorial needs a serif headline and warm paper, corporate is sharp.
+export const STYLE_DEFAULTS = {
+  corporate: { nav: "dark", header: "minimal", cards: "bordered", tables: "striped", canvas: "cool", auth: "split", radius: 4, density: "compact", appearance: "light" },
+  soft: { nav: "tinted", header: "split", cards: "elevated", tables: "cards", canvas: "tinted", auth: "centered", radius: 18, density: "comfortable", appearance: "light" },
+  playful: { nav: "solid", header: "pattern", cards: "elevated", tables: "cards", canvas: "warm", auth: "split", radius: 18, density: "comfortable", appearance: "light" },
+  editorial: { nav: "light", header: "banner", cards: "bordered", tables: "lines", canvas: "warm", auth: "split-right", radius: 2, density: "comfortable", appearance: "light", headingFont: "Playfair Display" },
+  glass: { nav: "dark", header: "banner", cards: "elevated", tables: "cards", canvas: "cool", auth: "centered", radius: 16, density: "comfortable", appearance: "dark" },
+  brutal: { nav: "light", header: "banner", cards: "bordered", tables: "lines", canvas: "warm", auth: "centered", radius: 6, density: "comfortable", appearance: "light" },
+  minimal: { nav: "light", header: "minimal", cards: "bordered", tables: "lines", canvas: "cool", auth: "centered", radius: 8, density: "comfortable", appearance: "light" },
+};
+
 function pick(list, n) {
   return list[n % list.length];
 }
@@ -218,31 +266,83 @@ export function resolveDesign(detail, theme) {
   const [presetBody, presetHeading] = pick(preset.fonts, h >>> 8);
   const layout = theme?.layout || null;
 
-  // An app generated with a <Layout> owns its whole look; an older app (no <Layout>) had a
-  // Theme the AI was told to make navy/compact for every business domain, so its colors, fonts
-  // and shape come from the domain preset instead — that's what makes existing apps distinct.
+  // The design language: the AI's explicit <Layout style> if it chose one, else one that fits the
+  // domain (picked by name hash where a domain has several).
+  const style = valid("style", layout?.style, pick(DOMAIN_STYLES[domain], h >>> 12));
+  const sd = STYLE_DEFAULTS[style];
+
+  // Precedence for the layout axes:
+  //  - <Layout style="..."> present → the AI composed the whole look deliberately; its values win.
+  //  - <Layout> without a style (apps generated before styles existed) → the style's defaults win,
+  //    because those generations converged on near-identical choices; only the shell is kept.
+  //  - No <Layout> at all (older apps) → style defaults over the domain preset variant.
   const fromTheme = !!layout;
+  const aiComposed = !!(layout && ENUMS.style.includes(layout.style));
+  const axis = (key) => (aiComposed ? valid(key, layout[key], sd[key] ?? base[key]) : (sd[key] ?? valid(key, layout?.[key], base[key])));
   const resolved = {
     domain,
+    style,
     source: fromTheme ? "theme" : "preset",
     shell: valid("shell", layout?.shell, base.shell),
-    nav: valid("nav", layout?.nav, base.nav),
-    appearance: valid("appearance", layout?.appearance, base.appearance),
-    header: valid("header", layout?.header, base.header),
-    cards: valid("cards", layout?.cards, base.cards),
-    tables: valid("tables", layout?.tables, base.tables),
-    canvas: valid("canvas", layout?.canvas, base.canvas),
-    auth: valid("auth", layout?.auth, base.auth),
+    nav: axis("nav"),
+    appearance: axis("appearance"),
+    header: axis("header"),
+    cards: axis("cards"),
+    tables: axis("tables"),
+    canvas: axis("canvas"),
+    auth: axis("auth"),
     primary: fromTheme && theme.hasColors ? theme.primary : presetPrimary,
     accent: fromTheme && theme.hasColors ? theme.accent : presetAccent,
     bodyFont: (fromTheme && fontOrNull(theme.fontName)) || presetBody,
-    headingFont: (fromTheme ? fontOrNull(theme.headingFontName) : presetHeading) || null,
-    radius: fromTheme ? Math.max(0, Math.min(Number(theme.cornerRadius) || base.radius, 20)) : base.radius,
-    density: fromTheme ? (theme.density === "compact" ? "compact" : "comfortable") : base.density,
+    headingFont: (fromTheme ? fontOrNull(theme.headingFontName) : presetHeading) || sd.headingFont || null,
+    radius: aiComposed ? Math.max(0, Math.min(Number(theme.cornerRadius) || sd.radius, 20)) : sd.radius,
+    density: aiComposed ? (theme.density === "compact" ? "compact" : "comfortable") : sd.density,
     fontSize: Number(theme?.fontSize) || 14,
   };
+  // A few languages only work with their own type: editorial needs a serif headline, brutal a
+  // grotesk, and glass is a dark-only look whatever else was asked.
+  if (style === "editorial" && !["Fraunces", "Playfair Display", "Lora"].includes(resolved.headingFont)) resolved.headingFont = "Playfair Display";
+  if (style === "brutal" && !aiComposed) resolved.bodyFont = "Space Grotesk";
+  if (style === "glass") resolved.appearance = "dark";
   resolved.headingFont = resolved.headingFont || resolved.bodyFont;
+  resolved.surfaceBg = fromTheme ? surfaceColorFor(theme.background) : "#ffffff";
+  resolved.tokens = validateTokens(theme?.tokens, resolved.appearance);
   return resolved;
+}
+
+// A generated app's surfaces must be light unless the design is dark (the light text colors
+// assume so) — a Theme background that is actually dark still gets a readable white surface.
+export function surfaceColorFor(background) {
+  const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(String(background || "").trim());
+  if (!m) return "#ffffff";
+  const hex = m[1].length === 3 ? m[1].split("").map((c) => c + c).join("") : m[1];
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 200 ? `#${hex}` : "#ffffff";
+}
+
+// One resolved design → the className + CSS variables for an .rt-app root. Shared by the Run
+// panel and every Design-tab preview, so a preview is exactly what the app will look like.
+export function designToCss(design) {
+  const t = design.tokens || { vars: {}, classes: [], typeScale: 1 };
+  const className = [
+    "rt-app",
+    design.density === "compact" && "rt-compact",
+    design.appearance === "dark" && "rt-dark",
+    `rt-style-${design.style}`, `rt-nav-${design.nav}`, `rt-cards-${design.cards}`, `rt-tables-${design.tables}`, `rt-canvas-${design.canvas}`,
+    design.radius >= 14 ? "rt-shape-round" : design.radius <= 6 ? "rt-shape-sharp" : null,
+    ...t.classes,
+  ].filter(Boolean).join(" ");
+  const style = {
+    "--rt-primary": design.primary,
+    "--rt-accent": design.accent,
+    "--rt-bg": design.appearance === "dark" ? "#171a21" : design.surfaceBg || "#ffffff",
+    "--rt-radius": `${Math.max(0, Math.min(design.radius, 14))}px`,
+    "--rt-font": `"${design.bodyFont}", Inter, system-ui, sans-serif`,
+    "--rt-font-heading": `"${design.headingFont}", "${design.bodyFont}", Inter, system-ui, sans-serif`,
+    "--rt-font-size": `${Math.round(design.fontSize * (t.typeScale || 1) * 10) / 10}px`,
+    ...t.vars,
+  };
+  return { className, style };
 }
 
 // The Google Fonts stylesheet URL for a profile's fonts. Weights stop at 700 because every

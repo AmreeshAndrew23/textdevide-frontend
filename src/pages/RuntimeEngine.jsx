@@ -6,6 +6,8 @@ import { ERDiagram } from "../components/ERDiagram";
 import AskPanel from "../components/AskPanel";
 import { BrandMark } from "../components/StudioLayout";
 import ThemeToggle from "../components/ThemeToggle";
+import DomainMotif from "../components/DomainMotif";
+import DesignStudio from "../components/DesignStudio";
 import { useAuth } from "../context/AuthContext";
 import {
   parseScreenForRun, parseEntityForRun, parseRelationshipForRun, parseDataSourceForRun, parseValidationForRun,
@@ -21,10 +23,12 @@ import {
   Copy, Boxes, Monitor, GitBranch, ListChecks, Database, Zap, Palette, KeyRound, Hash, ChevronRight, Check,
   RotateCcw, Plus, Pencil, Trash2, CheckCircle2, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronUp,
   ArrowUpDown, Upload, Image as ImageIcon, LogOut, CalendarDays, ArrowUpRight, BarChart3, PanelLeftOpen, PanelLeftClose,
-  Wallet, PieChart,
+  Wallet, PieChart, Table as TableIcon, Columns3, LayoutGrid, History,
 } from "lucide-react";
-import { buildInsights } from "../utils/dashboardInsights";
-import { resolveDesign, fontHref } from "../utils/designProfile";
+import { buildInsights, rowLabel } from "../utils/dashboardInsights";
+import { viewFields, availableViews, defaultView, monthGrid, groupByDay, dateKey, VIEW_LABELS } from "../utils/entityViews";
+import { resolveDesign, designToCss } from "../utils/designProfile";
+import { useDesignFonts } from "../utils/designFonts";
 import { pluralize, toneForValue, formatDate, formatNumber, displayText, avatarColors, toCsv } from "../utils/runtimeFormat";
 import "../runtimeApp.css";
 
@@ -363,16 +367,6 @@ function AppBar({ theme, appName }) {
   );
 }
 
-// A generated app's surfaces must be light (its text colors assume so) — a Theme that asks for a
-// dark background still gets readable white surfaces rather than dark-on-dark text.
-function surfaceColorFor(background) {
-  const m = /^#?([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(String(background || "").trim());
-  if (!m) return "#ffffff";
-  const hex = m[1].length === 3 ? m[1].split("").map((c) => c + c).join("") : m[1];
-  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 200 ? `#${hex}` : "#ffffff";
-}
-
 // Status-like values keep their meaning (red/amber/green); anything else gets a distinct palette
 // color by position, so a breakdown never shows two different values in the same color.
 const TONE_COLORS = { success: "#10b981", warning: "#f59e0b", danger: "#ef4444" };
@@ -459,6 +453,10 @@ export default function RuntimeEngine() {
   const [gridPageSize, setGridPageSize] = useState(10);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showMoreNav, setShowMoreNav] = useState(false);
+  // Per-entity choice of list view (table/board/calendar/gallery/timeline), and the month the
+  // calendar view is showing — presentation only, never saved.
+  const [viewByEntity, setViewByEntity] = useState({});
+  const [calMonth, setCalMonth] = useState(null);
   const [optionsCache, setOptionsCache] = useState({}); // dsName -> "loading" | [{value,label}]
   const [successMessage, setSuccessMessage] = useState("");
   const [uploadingFields, setUploadingFields] = useState({}); // field bind -> true while its picture is uploading
@@ -993,34 +991,8 @@ export default function RuntimeEngine() {
   // sign-in layout, light/dark — from its <Theme><Layout> or, for older apps, its domain (see
   // designProfile.js). This is what keeps every generated app from looking like one template.
   const design = resolveDesign(detail, theme);
-  const rtVars = {
-    "--rt-primary": design.primary,
-    "--rt-accent": design.accent,
-    "--rt-bg": design.appearance === "dark" ? "#171a21" : design.source === "theme" ? surfaceColorFor(theme.background) : "#ffffff",
-    "--rt-radius": `${Math.max(3, Math.min(design.radius, 14))}px`,
-    "--rt-font": `"${design.bodyFont}", Inter, system-ui, sans-serif`,
-    "--rt-font-heading": `"${design.headingFont}", "${design.bodyFont}", Inter, system-ui, sans-serif`,
-    "--rt-font-size": `${design.fontSize}px`,
-  };
-  const rtClass = [
-    "rt-app",
-    design.density === "compact" && "rt-compact",
-    design.appearance === "dark" && "rt-dark",
-    `rt-nav-${design.nav}`, `rt-cards-${design.cards}`, `rt-tables-${design.tables}`, `rt-canvas-${design.canvas}`,
-    design.radius >= 14 ? "rt-shape-round" : design.radius <= 6 ? "rt-shape-sharp" : null,
-  ].filter(Boolean).join(" ");
-  // The profile's Google Fonts, added to <head> once each (never removed — switching between
-  // apps just reuses whatever is already loaded).
-  const designFontHref = fontHref([design.bodyFont, design.headingFont]);
-  useEffect(() => {
-    if (!designFontHref) return;
-    if ([...document.head.querySelectorAll("link[data-rt-font]")].some((l) => l.dataset.rtFont === designFontHref)) return;
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = designFontHref;
-    link.dataset.rtFont = designFontHref;
-    document.head.appendChild(link);
-  }, [designFontHref]);
+  const { className: rtClass, style: rtVars } = designToCss(design);
+  useDesignFonts(design.bodyFont, design.headingFont);
   const screenEntityIcon = screenEntityDef ? parseEntityForRun(screenEntityDef.xml).icon : null;
   const gridScreenForEntity = (entityName) =>
     detail?.elements.find((e) => e.tag === "Screen" && !AUTH_SCREEN_NAMES.has(e.name) && parseScreenForRun(e.xml).grid?.entity === entityName) || null;
@@ -1102,6 +1074,36 @@ export default function RuntimeEngine() {
     };
     const numericBind = (bind) => ["integer", "decimal"].includes(fieldTypeOf(bind));
 
+    // Which views this entity's fields support, and which one is showing — the user's pick if
+    // they made one, else the one that fits the data (photos → gallery, dated → calendar…).
+    const vf = viewFields(screenEntityFields);
+    const views = availableViews(vf);
+    const suggested = defaultView(vf, entity);
+    const view = views.includes(viewByEntity[entity]) ? viewByEntity[entity] : views.includes(suggested) ? suggested : "table";
+    const VIEW_ICONS = { table: TableIcon, board: Columns3, calendar: CalendarDays, gallery: LayoutGrid, timeline: History };
+    const rowTarget = screenForRun.grid.rowClick?.targetScreen;
+    const openRecord = (row) => { if (!row.__deletedAt && rowTarget) openRowForEdit(rowTarget, row); };
+    const titleOf = (row) => rowLabel(screenEntityFields, row) || label;
+    const detailColumnsFor = (row) => columns
+      .filter((c) => c.bind !== vf.status?.name && c.bind !== vf.image?.name && String(row[c.bind] ?? "") !== titleOf(row))
+      .slice(0, 3);
+    const statusBadge = (row) => (vf.status && row[vf.status.name]
+      ? <span className={`rt-badge ${toneForValue(row[vf.status.name])}`}>{row[vf.status.name]}</span> : null);
+    const recordCard = (row, i, { showStatus = true } = {}) => (
+      <button key={row[screenKeyField] ?? i} type="button" className={`rt-rec${row.__deletedAt ? " deleted" : ""}`} onClick={() => openRecord(row)}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <div className="rt-rec-title">{titleOf(row)}</div>
+          {showStatus && statusBadge(row)}
+        </div>
+        <div className="rt-rec-meta">
+          {detailColumnsFor(row).map((c) => (
+            <div key={c.bind}><span className="k">{c.header}</span><span className="v">{renderGridCell(row, c, false)}</span></div>
+          ))}
+        </div>
+      </button>
+    );
+    const rows = visibleGridRows || [];
+
     const content = (
       <div className="rt-fade">
         <div className="rt-page-head">
@@ -1127,6 +1129,18 @@ export default function RuntimeEngine() {
               <input className="rt-input" value={gridSearch} onChange={(e) => { setGridSearch(e.target.value); setGridPage(1); }} placeholder={`Search ${plural.toLowerCase()}…`} />
             </div>
             <div style={{ flex: 1 }} />
+            {views.length > 1 && (
+              <div className="rt-seg" role="tablist" aria-label="View">
+                {views.map((v) => {
+                  const Icon = VIEW_ICONS[v];
+                  return (
+                    <button key={v} type="button" role="tab" aria-selected={view === v} className={view === v ? "active" : ""} onClick={() => setViewByEntity((cur) => ({ ...cur, [entity]: v }))} title={VIEW_LABELS[v]}>
+                      <Icon size={15} /> <span>{VIEW_LABELS[v]}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <label className="rt-switch">
               <input type="checkbox" checked={showDeleted} onChange={(e) => { setShowDeleted(e.target.checked); setGridPage(1); loadGridRows(screenForRun.grid.entity, e.target.checked); }} />
               <span className="track" /> Show deleted
@@ -1158,7 +1172,131 @@ export default function RuntimeEngine() {
             </div>
           )}
 
-          {!gridLoading && total > 0 && (
+          {/* ----- Board: one column per status value ----- */}
+          {!gridLoading && total > 0 && view === "board" && (() => {
+            const values = [...vf.status.values];
+            if (rows.some((r) => !r[vf.status.name])) values.push("");
+            return (
+              <div className="rt-board">
+                {values.map((value) => {
+                  const items = rows.filter((r) => (r[vf.status.name] || "") === value);
+                  return (
+                    <div key={value || "none"} className="rt-board-col">
+                      <div className="rt-board-head">
+                        <span className={`rt-badge ${value ? toneForValue(value) : "neutral"}`}>{value || `No ${humanize(vf.status.name).toLowerCase()}`}</span>
+                        <span className="rt-board-count">{items.length}</span>
+                      </div>
+                      <div className="rt-board-list">
+                        {items.map((row, i) => recordCard(row, i, { showStatus: false }))}
+                        {items.length === 0 && <div className="rt-board-empty">Nothing here</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {/* ----- Calendar: a month grid of records by their date ----- */}
+          {!gridLoading && total > 0 && view === "calendar" && (() => {
+            const today = new Date();
+            const cur = calMonth || { y: today.getFullYear(), m: today.getMonth() };
+            const cells = monthGrid(cur.y, cur.m);
+            const byDay = new Map();
+            for (const r of rows) {
+              const k = dateKey(r[vf.date.name]);
+              if (!k) continue;
+              if (!byDay.has(k)) byDay.set(k, []);
+              byDay.get(k).push(r);
+            }
+            const todayKey = dateKey(today);
+            const shift = (n) => { const d = new Date(cur.y, cur.m + n, 1); setCalMonth({ y: d.getFullYear(), m: d.getMonth() }); };
+            return (
+              <div className="rt-cal">
+                <div className="rt-cal-bar">
+                  <div className="rt-heading" style={{ fontSize: 17, fontWeight: 700, flex: 1 }}>
+                    {new Date(cur.y, cur.m, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+                  </div>
+                  <span style={{ fontSize: 12.5, color: "var(--rt-muted)" }}>By {humanize(vf.date.name).toLowerCase()}</span>
+                  <button className="rt-btn rt-btn-secondary rt-btn-sm" onClick={() => setCalMonth(null)}>Today</button>
+                  <button className="rt-icon-btn sm" onClick={() => shift(-1)} title="Previous month"><ChevronLeft size={16} /></button>
+                  <button className="rt-icon-btn sm" onClick={() => shift(1)} title="Next month"><ChevronRight size={16} /></button>
+                </div>
+                <div className="rt-cal-grid">
+                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => <div key={d} className="rt-cal-dow">{d}</div>)}
+                  {cells.map((c) => {
+                    const items = byDay.get(c.key) || [];
+                    return (
+                      <div key={c.key} className={`rt-cal-cell${c.inMonth ? "" : " out"}${c.key === todayKey ? " today" : ""}`}>
+                        <div className="rt-cal-num">{c.date.getDate()}</div>
+                        {items.slice(0, 3).map((r, i) => (
+                          <button key={r[screenKeyField] ?? i} type="button" className={`rt-cal-chip ${vf.status ? toneForValue(r[vf.status.name]) : "info"}`} onClick={() => openRecord(r)} title={titleOf(r)}>
+                            {titleOf(r)}
+                          </button>
+                        ))}
+                        {items.length > 3 && (
+                          <button type="button" className="rt-cal-more" onClick={() => setViewByEntity((cur2) => ({ ...cur2, [entity]: "timeline" }))}>+{items.length - 3} more</button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* ----- Gallery: photo cards ----- */}
+          {!gridLoading && total > 0 && view === "gallery" && (
+            <div className="rt-gallery">
+              {rows.map((row, i) => {
+                const img = row[vf.image.name];
+                const [bg, fg] = avatarColors(titleOf(row));
+                return (
+                  <button key={row[screenKeyField] ?? i} type="button" className={`rt-gal-card${row.__deletedAt ? " deleted" : ""}`} onClick={() => openRecord(row)}>
+                    <div className="rt-gal-img" style={img ? undefined : { background: bg, color: fg }}>
+                      {img ? <img src={`${API_ORIGIN}${img}`} alt="" /> : <span>{initialsFor(titleOf(row))}</span>}
+                      {statusBadge(row) && <div className="rt-gal-badge">{statusBadge(row)}</div>}
+                    </div>
+                    <div style={{ padding: "12px 14px 14px" }}>
+                      <div className="rt-rec-title">{titleOf(row)}</div>
+                      <div className="rt-rec-meta">
+                        {detailColumnsFor(row).slice(0, 2).map((c) => (
+                          <div key={c.bind}><span className="k">{c.header}</span><span className="v">{renderGridCell(row, c, false)}</span></div>
+                        ))}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ----- Timeline: records grouped by day, newest first ----- */}
+          {!gridLoading && total > 0 && view === "timeline" && (() => {
+            const groups = groupByDay(rows, vf.date.name);
+            const todayKey = dateKey(new Date());
+            return (
+              <div className="rt-timeline">
+                {groups.length === 0 && <div className="rt-board-empty" style={{ padding: 30 }}>No dated records to show.</div>}
+                {groups.map((g) => {
+                  const d = new Date(`${g.key}T00:00:00`);
+                  const diff = Math.round((d - new Date(`${todayKey}T00:00:00`)) / 86400000);
+                  const rel = diff === 0 ? "Today" : diff === 1 ? "Tomorrow" : diff === -1 ? "Yesterday" : null;
+                  return (
+                    <div key={g.key} className="rt-tl-group">
+                      <div className="rt-tl-date">
+                        <span className="rt-heading">{d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" })}</span>
+                        {rel && <span className="rt-badge plain info" style={{ marginLeft: 8 }}>{rel}</span>}
+                      </div>
+                      <div className="rt-tl-items">{g.items.map((row, i) => recordCard(row, i))}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {!gridLoading && total > 0 && view === "table" && (
             <>
               <div className="rt-table-wrap">
                 <table className="rt-table">
@@ -1338,6 +1476,7 @@ export default function RuntimeEngine() {
     return (
       <div className={`rt-auth ${design.auth}`}>
         <div className="rt-auth-brand">
+          <div className="rt-auth-motif"><DomainMotif domain={design.domain} style={{ width: "100%", height: "auto", display: "block" }} /></div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, position: "relative", zIndex: 1 }}>
             {theme.logo
               ? <img src={theme.logo} alt="" style={{ height: 34 }} onError={(e) => { e.target.style.display = "none"; }} />
@@ -1561,7 +1700,8 @@ export default function RuntimeEngine() {
     };
 
     return (
-      <div className="rt-fade">
+      <div className={`rt-fade rt-dash rt-comp-${design.style}`}>
+        <div className="rt-dash-hero">
         {/* Dashboard header — one of four styles from the design profile, so the very first thing
             a user sees differs from app to app. */}
         {(() => {
@@ -1619,9 +1759,7 @@ export default function RuntimeEngine() {
           }
           return (
             <div className={`rt-hero${design.header === "pattern" ? " pattern" : ""}`}>
-              <div style={{ position: "absolute", right: 36, top: "50%", transform: "translateY(-50%)", opacity: 0.13, pointerEvents: "none" }}>
-                <ModuleIcon entity={focus.key} icon={focus.icon} size={150} />
-              </div>
+              <div className="rt-hero-motif"><DomainMotif domain={design.domain} style={{ width: "100%", height: "auto", display: "block" }} /></div>
               <div style={{ position: "relative", zIndex: 1 }}>
                 <div style={{ fontSize: 13, opacity: 0.85, display: "flex", alignItems: "center", gap: 7 }}><CalendarDays size={14} /> {dateLine}</div>
                 <div className="rt-heading" style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.025em", marginTop: 8 }}>{title}</div>
@@ -1643,14 +1781,15 @@ export default function RuntimeEngine() {
             </div>
           );
         })()}
+        </div>
 
         {/* KPIs — chosen per app: main records, what needs attention, money, next busiest. */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 16, marginTop: 22 }}>
+        <div className="rt-dash-kpis" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 16, marginTop: 22 }}>
           {ins.kpis.map((k) => {
             const Icon = KPI_ICONS[k.kind];
             const [bg, fg] = TONE_STYLE[k.tone] || avatarColors(k.module.key);
             return (
-              <button key={k.key} className="rt-card rt-kpi" onClick={() => openModuleGrid(k.module)}>
+              <button key={k.key} className="rt-card rt-kpi" onClick={() => openModuleGrid(k.module)} style={{ "--kpi-bg": bg, "--kpi-fg": fg }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div className="rt-kpi-icon" style={{ background: bg, color: fg }}>{Icon ? <Icon size={19} /> : <ModuleIcon entity={k.module.key} icon={k.module.icon} size={19} />}</div>
                   <ArrowUpRight size={16} style={{ color: "#94a3b8" }} />
@@ -1665,7 +1804,7 @@ export default function RuntimeEngine() {
 
         {/* Status breakdown + timeline — the two widgets that most change from app to app. */}
         {(ins.breakdowns.length > 0 || ins.timeline) && (
-          <div style={{ display: "grid", gridTemplateColumns: ins.breakdowns.length > 0 && ins.timeline ? "minmax(0, 1fr) minmax(0, 1.2fr)" : "1fr", gap: 16, marginTop: 22, alignItems: "start" }}>
+          <div className="rt-dash-main" style={{ display: "grid", gridTemplateColumns: ins.breakdowns.length > 0 && ins.timeline ? "minmax(0, 1fr) minmax(0, 1.2fr)" : "1fr", gap: 16, marginTop: 22, alignItems: "start" }}>
             {ins.breakdowns[0] && (() => {
               const b = ins.breakdowns[0];
               return (
@@ -1734,7 +1873,7 @@ export default function RuntimeEngine() {
 
         {/* Distribution across a linked entity + any further status breakdowns. */}
         {(ins.distribution || ins.breakdowns.length > 1) && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginTop: 16, alignItems: "start" }}>
+          <div className="rt-dash-secondary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, marginTop: 16, alignItems: "start" }}>
             {ins.distribution && (
               <div className="rt-card">
                 <div className="rt-card-head">
@@ -1786,7 +1925,7 @@ export default function RuntimeEngine() {
 
         {/* Getting started — only the modules that are still empty. */}
         {!ins.loading && ins.emptyModules.length > 0 && (
-          <div className="rt-card" style={{ marginTop: 16 }}>
+          <div className="rt-card rt-dash-setup" style={{ marginTop: 16 }}>
             <div className="rt-card-head">
               <div style={{ flex: 1 }}>
                 <div className="rt-card-title">{ins.totalRecords === 0 ? "Get started" : "Finish setting up"}</div>
@@ -2214,6 +2353,7 @@ export default function RuntimeEngine() {
             {navItem("overview", "Overview", LayoutDashboard)}
             {navItem("describe", isEmptyApp ? "Describe app" : "AI builder", Sparkles)}
             {navItem("ask", "Ask about app", MessageSquareText, { disabled: isEmptyApp })}
+            {navItem("design", "Design", Palette, { disabled: isEmptyApp })}
             {navItem("run", "Run app", Play, { onClick: () => enterAppOrDescribe(detail), disabled: !canRun, active: false })}
 
             <div className="nav-group-label">Explore</div>
@@ -2296,6 +2436,7 @@ export default function RuntimeEngine() {
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <button className="studio-btn-secondary" onClick={() => goToSection("describe")}><Sparkles size={15} /> Describe a change</button>
                       <button className="studio-btn-secondary" onClick={() => goToSection("ask")}><MessageSquareText size={15} /> Ask</button>
+                      <button className="studio-btn-secondary" onClick={() => goToSection("design")}><Palette size={15} /> Design</button>
                       <button className="studio-btn-primary" onClick={() => enterAppOrDescribe(detail)} disabled={!canRun}><Play size={14} fill="currentColor" /> Run app</button>
                     </div>
                   </div>
@@ -2481,6 +2622,11 @@ export default function RuntimeEngine() {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* ----- Design ----- */}
+            {detail && !detailLoading && section === "design" && !activeElement && (
+              <DesignStudio applicationId={selectedId} detail={detail} onDetailChange={setDetail} />
             )}
 
             {/* ----- Ask ----- */}
