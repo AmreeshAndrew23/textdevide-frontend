@@ -24,6 +24,7 @@ import {
   Wallet, PieChart,
 } from "lucide-react";
 import { buildInsights } from "../utils/dashboardInsights";
+import { resolveDesign, fontHref } from "../utils/designProfile";
 import { pluralize, toneForValue, formatDate, formatNumber, displayText, avatarColors, toCsv } from "../utils/runtimeFormat";
 import "../runtimeApp.css";
 
@@ -457,6 +458,7 @@ export default function RuntimeEngine() {
   const [gridPage, setGridPage] = useState(1);
   const [gridPageSize, setGridPageSize] = useState(10);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showMoreNav, setShowMoreNav] = useState(false);
   const [optionsCache, setOptionsCache] = useState({}); // dsName -> "loading" | [{value,label}]
   const [successMessage, setSuccessMessage] = useState("");
   const [uploadingFields, setUploadingFields] = useState({}); // field bind -> true while its picture is uploading
@@ -987,15 +989,38 @@ export default function RuntimeEngine() {
   // professional business UI branded by the app's own <Theme> (see runtimeApp.css), not the
   // Studio's dark chrome. The Theme's values become CSS variables on the .rt-app root; every
   // screen reads them through classes, so one Theme change restyles the whole app.
+  // The app's whole visual system — layout, nav paint, fonts, shape, cards, tables, header,
+  // sign-in layout, light/dark — from its <Theme><Layout> or, for older apps, its domain (see
+  // designProfile.js). This is what keeps every generated app from looking like one template.
+  const design = resolveDesign(detail, theme);
   const rtVars = {
-    "--rt-primary": theme.primary,
-    "--rt-accent": theme.accent,
-    "--rt-bg": surfaceColorFor(theme.background),
-    "--rt-radius": `${Math.max(4, Math.min(Number(theme.cornerRadius) || 8, 14))}px`,
-    "--rt-font": theme.fontFamily,
-    "--rt-font-size": `${theme.fontSize || 14}px`,
+    "--rt-primary": design.primary,
+    "--rt-accent": design.accent,
+    "--rt-bg": design.appearance === "dark" ? "#171a21" : design.source === "theme" ? surfaceColorFor(theme.background) : "#ffffff",
+    "--rt-radius": `${Math.max(3, Math.min(design.radius, 14))}px`,
+    "--rt-font": `"${design.bodyFont}", Inter, system-ui, sans-serif`,
+    "--rt-font-heading": `"${design.headingFont}", "${design.bodyFont}", Inter, system-ui, sans-serif`,
+    "--rt-font-size": `${design.fontSize}px`,
   };
-  const rtClass = `rt-app${theme.density === "compact" ? " rt-compact" : ""}`;
+  const rtClass = [
+    "rt-app",
+    design.density === "compact" && "rt-compact",
+    design.appearance === "dark" && "rt-dark",
+    `rt-nav-${design.nav}`, `rt-cards-${design.cards}`, `rt-tables-${design.tables}`, `rt-canvas-${design.canvas}`,
+    design.radius >= 14 ? "rt-shape-round" : design.radius <= 6 ? "rt-shape-sharp" : null,
+  ].filter(Boolean).join(" ");
+  // The profile's Google Fonts, added to <head> once each (never removed — switching between
+  // apps just reuses whatever is already loaded).
+  const designFontHref = fontHref([design.bodyFont, design.headingFont]);
+  useEffect(() => {
+    if (!designFontHref) return;
+    if ([...document.head.querySelectorAll("link[data-rt-font]")].some((l) => l.dataset.rtFont === designFontHref)) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = designFontHref;
+    link.dataset.rtFont = designFontHref;
+    document.head.appendChild(link);
+  }, [designFontHref]);
   const screenEntityIcon = screenEntityDef ? parseEntityForRun(screenEntityDef.xml).icon : null;
   const gridScreenForEntity = (entityName) =>
     detail?.elements.find((e) => e.tag === "Screen" && !AUTH_SCREEN_NAMES.has(e.name) && parseScreenForRun(e.xml).grid?.entity === entityName) || null;
@@ -1311,7 +1336,7 @@ export default function RuntimeEngine() {
     const [title, sub] = headings[name] || [humanize(name), ""];
     const brandModules = buildAppModules(detail).slice(0, 4);
     return (
-      <div className="rt-auth">
+      <div className={`rt-auth ${design.auth}`}>
         <div className="rt-auth-brand">
           <div style={{ display: "flex", alignItems: "center", gap: 12, position: "relative", zIndex: 1 }}>
             {theme.logo
@@ -1320,7 +1345,7 @@ export default function RuntimeEngine() {
             <div style={{ fontWeight: 700, fontSize: 17 }}>{detail.name}</div>
           </div>
           <div style={{ position: "relative", zIndex: 1, maxWidth: 420 }}>
-            <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-0.025em", lineHeight: 1.15 }}>Everything your team needs, in one place.</div>
+            <div className="rt-heading" style={{ fontSize: 34, fontWeight: 800, letterSpacing: "-0.025em", lineHeight: 1.15 }}>Everything your team needs, in one place.</div>
             {brandModules.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 28 }}>
                 {brandModules.map((m) => (
@@ -1340,6 +1365,12 @@ export default function RuntimeEngine() {
         </div>
         <div className="rt-auth-form">
           <div className="rt-auth-card rt-fade">
+            <div className="rt-auth-mini-brand">
+              {theme.logo
+                ? <img src={theme.logo} alt="" style={{ height: 30 }} onError={(e) => { e.target.style.display = "none"; }} />
+                : <div className="rt-logo">{detail.name.charAt(0).toUpperCase()}</div>}
+              {detail.name}
+            </div>
             {onTabs && (
               <div className="rt-tabs">
                 {["Login", "Signup"].map((n) => {
@@ -1353,7 +1384,7 @@ export default function RuntimeEngine() {
                 })}
               </div>
             )}
-            <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>{title}</h1>
+            <h1 className="rt-heading" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>{title}</h1>
             {sub && <div style={{ color: "var(--rt-muted)", fontSize: 14, marginTop: 6, marginBottom: 24 }}>{sub}</div>}
             {name === "ChangePassword" && mustChangePassword && (
               <div className="rt-alert warning" style={{ marginBottom: 16 }}><AlertTriangle size={16} /> You must change your password before continuing.</div>
@@ -1531,36 +1562,87 @@ export default function RuntimeEngine() {
 
     return (
       <div className="rt-fade">
-        {/* Hero — the app's own highlights, with its main record type's icon as the backdrop. */}
-        <div className="rt-hero">
-          <div style={{ position: "absolute", right: 36, top: "50%", transform: "translateY(-50%)", opacity: 0.13, pointerEvents: "none" }}>
-            <ModuleIcon entity={focus.key} icon={focus.icon} size={150} />
-          </div>
-          <div style={{ position: "relative", zIndex: 1 }}>
-            <div style={{ fontSize: 13, opacity: 0.85, display: "flex", alignItems: "center", gap: 7 }}>
-              <CalendarDays size={14} /> {new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
-            </div>
-            <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.025em", marginTop: 8 }}>{greetingForHour(new Date().getHours())}, {who}</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
-              {ins.loading && <span className="rt-hero-btn" style={{ cursor: "default" }}>Loading your data…</span>}
-              {!ins.loading && ins.highlights.length === 0 && (
-                <span style={{ fontSize: 14, opacity: 0.9 }}>
-                  {ins.totalRecords === 0 ? `Welcome to ${detail.name} — let's add your first records.` : `${ins.totalRecords.toLocaleString()} records across ${modules.length} modules.`}
-                </span>
-              )}
-              {!ins.loading && ins.highlights.map((h) => (
-                <span key={h} style={{ background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.28)", borderRadius: 999, padding: "5px 12px", fontSize: 13, fontWeight: 600 }}>{h}</span>
-              ))}
-            </div>
-            {formModules.length > 0 && (
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 20 }}>
-                {formModules.slice(0, 3).map((m) => (
-                  <button key={m.key} className="rt-hero-btn" onClick={() => openElement(m.formScreenEl)}><Plus size={15} /> New {m.label.toLowerCase()}</button>
+        {/* Dashboard header — one of four styles from the design profile, so the very first thing
+            a user sees differs from app to app. */}
+        {(() => {
+          const dateLine = new Date().toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+          const title = `${greetingForHour(new Date().getHours())}, ${who}`;
+          const fallbackLine = ins.totalRecords === 0 ? `Welcome to ${detail.name} — let's add your first records.` : `${ins.totalRecords.toLocaleString()} records across ${modules.length} modules.`;
+          const focusKpi = ins.kpis[0];
+          if (design.header === "split" || design.header === "minimal") {
+            const chips = (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                {ins.loading && <span className="rt-hero-chip">Loading your data…</span>}
+                {!ins.loading && ins.highlights.length === 0 && <span style={{ fontSize: 14, color: "var(--rt-muted)" }}>{fallbackLine}</span>}
+                {!ins.loading && ins.highlights.map((h) => <span key={h} className="rt-hero-chip">{h}</span>)}
+              </div>
+            );
+            const actions = formModules.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: design.header === "split" ? 20 : 0 }}>
+                {formModules.slice(0, design.header === "split" ? 2 : 3).map((m, i) => (
+                  <button key={m.key} className={`rt-btn ${i === 0 ? "rt-btn-primary" : "rt-btn-secondary"}`} onClick={() => openElement(m.formScreenEl)}><Plus size={15} /> New {m.label.toLowerCase()}</button>
                 ))}
               </div>
-            )}
-          </div>
-        </div>
+            );
+            if (design.header === "minimal") {
+              return (
+                <div className="rt-minimal-head">
+                  <div style={{ flex: 1, minWidth: 260 }}>
+                    <div style={{ fontSize: 13, color: "var(--rt-muted)", display: "flex", alignItems: "center", gap: 7 }}><CalendarDays size={14} /> {dateLine}</div>
+                    <div className="rt-heading" style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-0.03em", marginTop: 6 }}>{title}</div>
+                    {chips}
+                  </div>
+                  {actions}
+                </div>
+              );
+            }
+            return (
+              <div className="rt-card rt-hero-split">
+                <div className="lead">
+                  <div style={{ fontSize: 13, color: "var(--rt-muted)", display: "flex", alignItems: "center", gap: 7 }}><CalendarDays size={14} /> {dateLine}</div>
+                  <div className="rt-heading" style={{ fontSize: 27, fontWeight: 800, letterSpacing: "-0.025em", marginTop: 8 }}>{title}</div>
+                  {chips}
+                  {actions}
+                </div>
+                <div className="focus">
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 13, fontWeight: 600, opacity: 0.9 }}>{focusKpi?.label || pluralize(focus.label)}</span>
+                    <ModuleIcon entity={focus.key} icon={focus.icon} size={22} style={{ opacity: 0.85 }} />
+                  </div>
+                  <div className="rt-heading" style={{ fontSize: 46, fontWeight: 800, letterSpacing: "-0.04em", lineHeight: 1 }}>
+                    {focusKpi?.value == null ? "—" : focusKpi.value.toLocaleString()}
+                  </div>
+                  <button className="rt-hero-btn" style={{ alignSelf: "flex-start" }} onClick={() => openModuleGrid(focus)}>View {pluralize(focus.label).toLowerCase()} <ChevronRight size={14} /></button>
+                </div>
+              </div>
+            );
+          }
+          return (
+            <div className={`rt-hero${design.header === "pattern" ? " pattern" : ""}`}>
+              <div style={{ position: "absolute", right: 36, top: "50%", transform: "translateY(-50%)", opacity: 0.13, pointerEvents: "none" }}>
+                <ModuleIcon entity={focus.key} icon={focus.icon} size={150} />
+              </div>
+              <div style={{ position: "relative", zIndex: 1 }}>
+                <div style={{ fontSize: 13, opacity: 0.85, display: "flex", alignItems: "center", gap: 7 }}><CalendarDays size={14} /> {dateLine}</div>
+                <div className="rt-heading" style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.025em", marginTop: 8 }}>{title}</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                  {ins.loading && <span className="rt-hero-btn" style={{ cursor: "default" }}>Loading your data…</span>}
+                  {!ins.loading && ins.highlights.length === 0 && <span style={{ fontSize: 14, opacity: 0.9 }}>{fallbackLine}</span>}
+                  {!ins.loading && ins.highlights.map((h) => (
+                    <span key={h} style={{ background: "rgba(255,255,255,0.16)", border: "1px solid rgba(255,255,255,0.28)", borderRadius: 999, padding: "5px 12px", fontSize: 13, fontWeight: 600 }}>{h}</span>
+                  ))}
+                </div>
+                {formModules.length > 0 && (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 20 }}>
+                    {formModules.slice(0, 3).map((m) => (
+                      <button key={m.key} className="rt-hero-btn" onClick={() => openElement(m.formScreenEl)}><Plus size={15} /> New {m.label.toLowerCase()}</button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* KPIs — chosen per app: main records, what needs attention, money, next busiest. */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 16, marginTop: 22 }}>
@@ -1806,138 +1888,203 @@ export default function RuntimeEngine() {
           </div>
         )}
 
-        {showAuthLayout ? renderFormScreen(true) : (
-          <div className="rt-shell">
-            <aside className={`rt-sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
-              <div className="rt-brand">
-                {theme.logo
-                  ? <img src={theme.logo} alt="" style={{ height: 30, maxWidth: sidebarCollapsed ? 36 : 140, objectFit: "contain" }} onError={(e) => { e.target.style.display = "none"; }} />
-                  : <div className="rt-logo">{detail.name.charAt(0).toUpperCase()}</div>}
-                {!sidebarCollapsed && (
-                  <div style={{ minWidth: 0 }}>
-                    <div className="rt-brand-name">{detail.name}</div>
-                    <div className="rt-brand-sub">Workspace</div>
+        {showAuthLayout ? renderFormScreen(true) : (() => {
+          const brandMark = theme.logo
+            ? <img src={theme.logo} alt="" style={{ height: 30, maxWidth: 140, objectFit: "contain" }} onError={(e) => { e.target.style.display = "none"; }} />
+            : <div className="rt-logo">{detail.name.charAt(0).toUpperCase()}</div>;
+          const isModuleActive = (m) => screenForRun?.entity === m.key && !!activeElement;
+          const crumbs = (
+            <div className="rt-crumbs">
+              <button onClick={openDashboard}>{detail.name}</button>
+              {activeModule && (
+                <>
+                  <ChevronRight size={14} />
+                  {screenForRun?.grid
+                    ? <span className="current">{pluralize(activeModule.label)}</span>
+                    : <button onClick={() => openElement(activeModule.screenEl)}>{pluralize(activeModule.label)}</button>}
+                </>
+              )}
+              {activeElement && screenForRun && !screenForRun.grid && (
+                <>
+                  <ChevronRight size={14} />
+                  <span className="current">{activeElement.name === "ChangePassword" ? "Change password" : runFieldValues[screenKeyField] ? "Edit" : "New"}</span>
+                </>
+              )}
+              {!activeElement && (<><ChevronRight size={14} /><span className="current">Dashboard</span></>)}
+            </div>
+          );
+          const topActions = (
+            <>
+              <div className="rt-search" style={design.shell === "topnav" ? { width: 220 } : undefined}>
+                <Search size={15} />
+                <input className="rt-input" value={navSearch} onChange={(e) => setNavSearch(e.target.value)} placeholder="Search modules…" />
+              </div>
+              <div style={{ position: "relative" }}>
+                <button className="rt-icon-btn" onClick={() => { setShowNotifications((v) => !v); setShowUserMenu(false); }} title="Notifications"><Bell size={18} /></button>
+                {showNotifications && (
+                  <div className="rt-menu" style={{ right: 0, top: 44, width: 280, padding: 18, textAlign: "center" }} onMouseLeave={() => setShowNotifications(false)}>
+                    <div className="rt-empty-icon" style={{ width: 44, height: 44, borderRadius: 12, marginBottom: 10 }}><Bell size={20} /></div>
+                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>You're all caught up</div>
+                    <div style={{ fontSize: 12.5, color: "var(--rt-muted)", marginTop: 3 }}>No new notifications right now.</div>
                   </div>
                 )}
               </div>
-              <nav className="rt-nav">
-                <button className={`rt-nav-item${!activeElement ? " active" : ""}`} onClick={openDashboard} title="Dashboard">
-                  <LayoutDashboard size={18} strokeWidth={1.8} /> {!sidebarCollapsed && "Dashboard"}
+              <div style={{ position: "relative" }}>
+                <button onClick={() => { setShowUserMenu((v) => !v); setShowNotifications(false); }}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 4px 4px", border: "1px solid var(--rt-border)", borderRadius: 999, background: "var(--rt-surface)", cursor: "pointer" }}>
+                  <span className="rt-avatar" style={{ width: 32, height: 32, background: idBg, color: idFg }}>{initialsFor(identity)}</span>
+                  <span style={{ textAlign: "left", lineHeight: 1.2 }}>
+                    <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--rt-text)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayNameFor(identity)}</span>
+                    <span style={{ display: "block", fontSize: 11.5, color: "var(--rt-muted)" }}>{identitySubtitle}</span>
+                  </span>
+                  <ChevronDown size={14} style={{ color: "var(--rt-muted)" }} />
                 </button>
-                {groupOrder.map((group) => {
-                  const items = filteredModules.filter((m) => m.group === group);
-                  if (items.length === 0) return null;
-                  return (
-                    <div key={group}>
-                      {!sidebarCollapsed ? <div className="rt-nav-label">{group}</div> : <div style={{ height: 1, background: "var(--rt-border)", margin: "12px 8px" }} />}
-                      {items.map((m) => {
-                        const active = screenForRun?.entity === m.key && !!activeElement;
-                        const count = moduleCounts[m.key];
-                        return (
-                          <button key={m.key} className={`rt-nav-item${active ? " active" : ""}`} onClick={() => openElement(m.screenEl)} title={pluralize(m.label)}>
-                            <ModuleIcon entity={m.key} icon={m.icon} size={18} />
-                            {!sidebarCollapsed && <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pluralize(m.label)}</span>}
-                            {!sidebarCollapsed && typeof count === "number" && <span className="rt-nav-count">{count}</span>}
-                          </button>
-                        );
-                      })}
+                {showUserMenu && (
+                  <div className="rt-menu" style={{ right: 0, top: 48 }} onMouseLeave={() => setShowUserMenu(false)}>
+                    <div style={{ padding: "8px 10px 10px", borderBottom: "1px solid var(--rt-border)", marginBottom: 4 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameFor(identity)}</div>
+                      <div style={{ fontSize: 12, color: "var(--rt-muted)", overflow: "hidden", textOverflow: "ellipsis" }}>{identity}</div>
                     </div>
-                  );
-                })}
-                {navSearch.trim() && filteredModules.length === 0 && !sidebarCollapsed && (
-                  <div style={{ fontSize: 12.5, color: "var(--rt-muted)", padding: "10px 12px" }}>No modules match "{navSearch}".</div>
+                    {accountEntityEl && loggedIn ? (
+                      <>
+                        <button onClick={() => {
+                          setShowUserMenu(false);
+                          const cp = detail.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
+                          if (cp) openElement(cp); else setError("No ChangePassword screen found.");
+                        }}><KeyRound size={15} /> Change password</button>
+                        <button className="danger" onClick={() => { setShowUserMenu(false); handleLogout(); }} disabled={loggingOut}><LogOut size={15} /> {loggingOut ? "Signing out…" : "Sign out"}</button>
+                      </>
+                    ) : (
+                      <div style={{ padding: "6px 10px 8px", fontSize: 12, color: "var(--rt-muted)" }}>This app has no user accounts — you're previewing it as the owner.</div>
+                    )}
+                  </div>
                 )}
-              </nav>
-              <div className="rt-sidebar-foot">
-                <button className="rt-nav-item" onClick={() => setSidebarCollapsed((c) => !c)} title={sidebarCollapsed ? "Expand menu" : "Collapse menu"} style={{ marginBottom: 0 }}>
-                  {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />} {!sidebarCollapsed && "Collapse"}
-                </button>
               </div>
-            </aside>
+            </>
+          );
+          const pageContent = (
+            <>
+              {error && (
+                <div className="rt-alert error" style={{ marginBottom: 16, alignItems: "center" }}>
+                  <AlertCircle size={16} /><span style={{ flex: 1 }}>{error}</span>
+                  <button className="rt-icon-btn sm" onClick={() => setError("")}><XIcon size={14} /></button>
+                </div>
+              )}
+              {!activeElement && renderAppDashboard(modules)}
+              {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && renderGridScreen(true)}
+              {activeElement && activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && renderFormScreen(true)}
+            </>
+          );
 
-            <div className="rt-main">
-              <header className="rt-topbar">
-                <div className="rt-crumbs">
-                  <button onClick={openDashboard}>{detail.name}</button>
-                  {activeModule && (
-                    <>
-                      <ChevronRight size={14} />
-                      {screenForRun?.grid
-                        ? <span className="current">{pluralize(activeModule.label)}</span>
-                        : <button onClick={() => openElement(activeModule.screenEl)}>{pluralize(activeModule.label)}</button>}
-                    </>
-                  )}
-                  {activeElement && screenForRun && !screenForRun.grid && (
-                    <>
-                      <ChevronRight size={14} />
-                      <span className="current">{activeElement.name === "ChangePassword" ? "Change password" : runFieldValues[screenKeyField] ? "Edit" : "New"}</span>
-                    </>
-                  )}
-                  {!activeElement && (<><ChevronRight size={14} /><span className="current">Dashboard</span></>)}
-                </div>
-                <div style={{ flex: 1 }} />
-                <div className="rt-search">
-                  <Search size={15} />
-                  <input className="rt-input" value={navSearch} onChange={(e) => setNavSearch(e.target.value)} placeholder="Search modules…" />
-                </div>
-                <div style={{ position: "relative" }}>
-                  <button className="rt-icon-btn" onClick={() => { setShowNotifications((v) => !v); setShowUserMenu(false); }} title="Notifications"><Bell size={18} /></button>
-                  {showNotifications && (
-                    <div className="rt-menu" style={{ right: 0, top: 44, width: 280, padding: 18, textAlign: "center" }} onMouseLeave={() => setShowNotifications(false)}>
-                      <div className="rt-empty-icon" style={{ width: 44, height: 44, borderRadius: 12, marginBottom: 10 }}><Bell size={20} /></div>
-                      <div style={{ fontWeight: 600, fontSize: 13.5 }}>You're all caught up</div>
-                      <div style={{ fontSize: 12.5, color: "var(--rt-muted)", marginTop: 3 }}>No new notifications right now.</div>
-                    </div>
-                  )}
-                </div>
-                <div style={{ position: "relative" }}>
-                  <button onClick={() => { setShowUserMenu((v) => !v); setShowNotifications(false); }}
-                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 8px 4px 4px", border: "1px solid var(--rt-border)", borderRadius: 999, background: "var(--rt-surface)", cursor: "pointer" }}>
-                    <span className="rt-avatar" style={{ width: 32, height: 32, background: idBg, color: idFg }}>{initialsFor(identity)}</span>
-                    <span style={{ textAlign: "left", lineHeight: 1.2 }}>
-                      <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--rt-text)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayNameFor(identity)}</span>
-                      <span style={{ display: "block", fontSize: 11.5, color: "var(--rt-muted)" }}>{identitySubtitle}</span>
-                    </span>
-                    <ChevronDown size={14} style={{ color: "var(--rt-muted)" }} />
-                  </button>
-                  {showUserMenu && (
-                    <div className="rt-menu" style={{ right: 0, top: 48 }} onMouseLeave={() => setShowUserMenu(false)}>
-                      <div style={{ padding: "8px 10px 10px", borderBottom: "1px solid var(--rt-border)", marginBottom: 4 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600 }}>{displayNameFor(identity)}</div>
-                        <div style={{ fontSize: 12, color: "var(--rt-muted)", overflow: "hidden", textOverflow: "ellipsis" }}>{identity}</div>
+          // ----- Top navigation: brand + horizontal module links, overflow in a "More" menu -----
+          if (design.shell === "topnav") {
+            const VISIBLE = 5;
+            const shown = filteredModules.slice(0, VISIBLE);
+            const overflow = filteredModules.slice(VISIBLE);
+            return (
+              <div className="rt-shell topnav">
+                <header className="rt-topnav">
+                  <div className="rt-brand">{brandMark}<div className="rt-brand-name">{detail.name}</div></div>
+                  <nav className="rt-topnav-links">
+                    <button className={`rt-nav-item${!activeElement ? " active" : ""}`} onClick={openDashboard}><LayoutDashboard size={16} /> Dashboard</button>
+                    {shown.map((m) => (
+                      <button key={m.key} className={`rt-nav-item${isModuleActive(m) ? " active" : ""}`} onClick={() => openElement(m.screenEl)}>
+                        <ModuleIcon entity={m.key} icon={m.icon} size={16} /> {pluralize(m.label)}
+                      </button>
+                    ))}
+                    {overflow.length > 0 && (
+                      <div style={{ position: "relative" }}>
+                        <button className={`rt-nav-item${overflow.some(isModuleActive) ? " active" : ""}`} onClick={() => setShowMoreNav((v) => !v)}>More <ChevronDown size={14} /></button>
+                        {showMoreNav && (
+                          <div className="rt-menu" style={{ left: 0, top: 46 }} onMouseLeave={() => setShowMoreNav(false)}>
+                            {overflow.map((m) => (
+                              <button key={m.key} onClick={() => { setShowMoreNav(false); openElement(m.screenEl); }}>
+                                <ModuleIcon entity={m.key} icon={m.icon} size={15} /> {pluralize(m.label)}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      {accountEntityEl && loggedIn ? (
-                        <>
-                          <button onClick={() => {
-                            setShowUserMenu(false);
-                            const cp = detail.elements.find((e) => e.tag === "Screen" && e.name === "ChangePassword");
-                            if (cp) openElement(cp); else setError("No ChangePassword screen found.");
-                          }}><KeyRound size={15} /> Change password</button>
-                          <button className="danger" onClick={() => { setShowUserMenu(false); handleLogout(); }} disabled={loggingOut}><LogOut size={15} /> {loggingOut ? "Signing out…" : "Sign out"}</button>
-                        </>
-                      ) : (
-                        <div style={{ padding: "6px 10px 8px", fontSize: 12, color: "var(--rt-muted)" }}>This app has no user accounts — you're previewing it as the owner.</div>
-                      )}
+                    )}
+                  </nav>
+                  {topActions}
+                </header>
+                <div className="rt-main">
+                  <div className="rt-content">
+                    <div className="rt-page">
+                      {activeElement && <div style={{ marginBottom: 14 }}>{crumbs}</div>}
+                      {pageContent}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // ----- Sidebar or icon rail -----
+          const rail = design.shell === "rail";
+          const collapsed = !rail && sidebarCollapsed;
+          return (
+            <div className="rt-shell">
+              <aside className={`rt-sidebar${rail ? " rail" : ""}${collapsed ? " collapsed" : ""}`}>
+                <div className="rt-brand" title={detail.name}>
+                  {brandMark}
+                  {!rail && !collapsed && (
+                    <div style={{ minWidth: 0 }}>
+                      <div className="rt-brand-name">{detail.name}</div>
+                      <div className="rt-brand-sub">Workspace</div>
                     </div>
                   )}
                 </div>
-              </header>
-              <div className="rt-content">
-                <div className="rt-page">
-                  {error && (
-                    <div className="rt-alert error" style={{ marginBottom: 16, alignItems: "center" }}>
-                      <AlertCircle size={16} /><span style={{ flex: 1 }}>{error}</span>
-                      <button className="rt-icon-btn sm" onClick={() => setError("")}><XIcon size={14} /></button>
-                    </div>
+                <nav className="rt-nav">
+                  <button className={`rt-nav-item${!activeElement ? " active" : ""}`} onClick={openDashboard} title="Dashboard">
+                    <LayoutDashboard size={rail ? 20 : 18} strokeWidth={1.8} /> {rail ? <span>Home</span> : !collapsed && "Dashboard"}
+                  </button>
+                  {groupOrder.map((group) => {
+                    const items = filteredModules.filter((m) => m.group === group);
+                    if (items.length === 0) return null;
+                    return (
+                      <div key={group}>
+                        {rail || collapsed ? <div className="rt-nav-sep" style={{ height: 1, background: "var(--nav-border)", margin: "10px 12px" }} /> : <div className="rt-nav-label">{group}</div>}
+                        {items.map((m) => {
+                          const count = moduleCounts[m.key];
+                          return (
+                            <button key={m.key} className={`rt-nav-item${isModuleActive(m) ? " active" : ""}`} onClick={() => openElement(m.screenEl)} title={pluralize(m.label)}>
+                              <ModuleIcon entity={m.key} icon={m.icon} size={rail ? 20 : 18} />
+                              {rail && <span>{pluralize(m.label)}</span>}
+                              {!rail && !collapsed && <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pluralize(m.label)}</span>}
+                              {!rail && !collapsed && typeof count === "number" && <span className="rt-nav-count">{count}</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                  {navSearch.trim() && filteredModules.length === 0 && !rail && !collapsed && (
+                    <div style={{ fontSize: 12.5, color: "var(--nav-muted)", padding: "10px 12px" }}>No modules match "{navSearch}".</div>
                   )}
-                  {!activeElement && renderAppDashboard(modules)}
-                  {activeElement && activeElement.tag === "Screen" && screenForRun?.grid && renderGridScreen(true)}
-                  {activeElement && activeElement.tag === "Screen" && screenForRun && !screenForRun.grid && renderFormScreen(true)}
+                </nav>
+                {!rail && (
+                  <div className="rt-sidebar-foot">
+                    <button className="rt-nav-item" onClick={() => setSidebarCollapsed((c) => !c)} title={collapsed ? "Expand menu" : "Collapse menu"} style={{ marginBottom: 0 }}>
+                      {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />} {!collapsed && "Collapse"}
+                    </button>
+                  </div>
+                )}
+              </aside>
+              <div className="rt-main">
+                <header className="rt-topbar">
+                  {crumbs}
+                  <div style={{ flex: 1 }} />
+                  {topActions}
+                </header>
+                <div className="rt-content">
+                  <div className="rt-page">{pageContent}</div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* The Ask slide-over — same panel as the Studio's Ask section, so a question that comes
             up while actually using the app ("why won't this save?") can be answered in place. */}

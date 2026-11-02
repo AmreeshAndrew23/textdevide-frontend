@@ -126,7 +126,7 @@ export function humanize(name) {
   return (name || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
 }
 
-export const DEFAULT_THEME = { logo: null, primary: "#4f46e5", accent: "#f59e0b", background: "#ffffff", fontFamily: "system-ui, sans-serif", fontSize: "14", cornerRadius: "6", density: "comfortable" };
+export const DEFAULT_THEME = { layout: null, fontName: null, headingFontName: null, hasColors: false, logo: null, primary: "#4f46e5", accent: "#f59e0b", background: "#ffffff", fontFamily: "system-ui, sans-serif", fontSize: "14", cornerRadius: "6", density: "comfortable" };
 
 // Extracts the generated <Theme> element's Colors/Font/Style/Logo into something directly usable
 // as inline CSS — the only part of the vocabulary that's purely cosmetic (per the plan's Phase 2
@@ -140,7 +140,16 @@ export function parseThemeForRun(xml) {
   const colors = root.querySelector("Colors");
   const font = root.querySelector("Font");
   const style = root.querySelector("Style");
+  // <Layout> is the newer, optional part of the vocabulary — the app's whole visual system (shell,
+  // nav, header, cards, tables, appearance…). null for apps generated before it existed; the Run
+  // panel then derives one from the app's domain instead (see designProfile.js).
+  const layoutEl = root.querySelector("Layout");
+  const layout = layoutEl ? Object.fromEntries(Array.from(layoutEl.attributes).map((a) => [a.name, a.value])) : null;
   return {
+    layout,
+    fontName: font?.getAttribute("family") || null,
+    headingFontName: font?.getAttribute("headingFamily") || null,
+    hasColors: !!colors,
     logo: logo?.getAttribute("src") || null,
     primary: colors?.getAttribute("primary") || DEFAULT_THEME.primary,
     accent: colors?.getAttribute("accent") || DEFAULT_THEME.accent,
