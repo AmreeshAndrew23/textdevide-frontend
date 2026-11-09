@@ -403,6 +403,22 @@ function Donut({ buckets, total, size = 132, stroke = 18 }) {
   );
 }
 
+// Which alerts this browser has already shown, so the bell only counts new ones.
+function readSeenAlerts(key) {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(key) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function writeSeenAlerts(key, keys) {
+  try {
+    localStorage.setItem(key, JSON.stringify(keys));
+  } catch {
+    // Storage blocked: alerts just count as new again next time.
+  }
+}
+
 // GitHub's mark (lucide no longer ships brand icons).
 function GithubMark({ size = 16 }) {
   return (
@@ -467,6 +483,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
   const [viewByEntity, setViewByEntity] = useState({});
   const [publicUnavailable, setPublicUnavailable] = useState(false);
   const [sampleBusy, setSampleBusy] = useState(false);
+  const [notes, setNotes] = useState([]); // a published app's stored notifications
   const [genCheck, setGenCheck] = useState(null); // the AI self-check's result for pendingXml
   const [sampleResult, setSampleResult] = useState(null); // { created, skipped, firstProblem } after filling
   const [inviteInfo, setInviteInfo] = useState(null); // { token, email } when opened from a personal invite link
@@ -892,10 +909,22 @@ export default function RuntimeEngine({ publicSlug = null }) {
         } else {
           setActiveElement(null);
           loadModuleCounts(d.id, buildAppModules(d, session.role));
+          loadNotes();
         }
       })
       .catch((e) => { if (e.response?.status !== 401) setPublicUnavailable(true); });
   }
+
+  function loadNotes() {
+    return http.get(`/public-apps/${publicSlug}/notifications`).then((res) => setNotes(res.data.notifications || [])).catch(() => {});
+  }
+
+  // A signed-in user of a published app hears about new notifications without reloading.
+  useEffect(() => {
+    if (!isPublic || !loggedIn) return undefined;
+    const timer = window.setInterval(loadNotes, 60000);
+    return () => window.clearInterval(timer);
+  }, [isPublic, loggedIn]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- loading the app when the page opens
   useEffect(() => { if (isPublic) loadPublicApp(); }, []);
@@ -1489,7 +1518,9 @@ export default function RuntimeEngine({ publicSlug = null }) {
     const id = `rtf-${f.bind}`;
     let control;
     let span2 = isLongText;
-    if (isPasswordField) {
+    if (fieldDef?.autoNumber) {
+      control = <input id={id} className="rt-input" disabled value={value} placeholder="Assigned automatically" />;
+    } else if (isPasswordField) {
       control = <input id={id} className="rt-input" type="password" autoComplete={f.bind === "password" ? "current-password" : "new-password"} value={value} onChange={(e) => setValue(e.target.value)} placeholder="••••••••" />;
     } else if (fieldDef?.type === "image") {
       span2 = true;
@@ -2075,6 +2106,25 @@ export default function RuntimeEngine({ publicSlug = null }) {
       && (needsLoginGate || (activeElement.name === "ChangePassword" && mustChangePassword));
     const activeModule = screenForRun?.entity ? modules.find((m) => m.key === screenForRun.entity) : null;
     const [idBg, idFg] = avatarColors(identity);
+    // The bell: stored notifications plus alerts worked out from this person's own records.
+    const alerts = buildInsights({ modules, detail, rowsByEntity: moduleRows }).alerts;
+    const seenKey = `textdev.seen.${publicSlug || selectedId}`;
+    const seen = readSeenAlerts(seenKey);
+    const unreadCount = alerts.filter((a) => !seen.has(a.key)).length + notes.filter((n) => !n.read).length;
+    const toggleBell = () => {
+      const opening = !showNotifications;
+      setShowNotifications(opening);
+      setShowUserMenu(false);
+      if (!opening) return;
+      writeSeenAlerts(seenKey, alerts.map((a) => a.key));
+      if (isPublic && notes.some((n) => !n.read)) http.post(`${appPath}/notifications/read`).then(loadNotes).catch(() => {});
+    };
+    const openAlert = (a) => {
+      setShowNotifications(false);
+      const target = parseScreenForRun(a.module.screenEl.xml).grid?.rowClick?.targetScreen;
+      if (target) openRowForEdit(target, a.row); else openElement(a.module.screenEl);
+    };
+    const alertWhen = (a) => (a.kind === "overdue" ? `Overdue by ${-a.days} day${a.days === -1 ? "" : "s"}` : a.days === 0 ? "Today" : "Tomorrow");
     return (
       <div className={rtClass} style={{ ...rtVars, position: "fixed", inset: 0, zIndex: 100, display: "flex", flexDirection: "column" }}>
         {!isPublic && <div className="rt-builder-bar">
@@ -2172,12 +2222,33 @@ export default function RuntimeEngine({ publicSlug = null }) {
                 <input className="rt-input" value={navSearch} onChange={(e) => setNavSearch(e.target.value)} placeholder="Search modules…" />
               </div>
               <div style={{ position: "relative" }}>
-                <button className="rt-icon-btn" onClick={() => { setShowNotifications((v) => !v); setShowUserMenu(false); }} title="Notifications"><Bell size={18} /></button>
+                <button className="rt-icon-btn" onClick={toggleBell} title="Notifications" aria-label={`Notifications, ${unreadCount} new`} style={{ position: "relative" }}>
+                  <Bell size={18} />
+                  {unreadCount > 0 && !showNotifications && <span className="rt-bell-badge">{unreadCount > 9 ? "9+" : unreadCount}</span>}
+                </button>
                 {showNotifications && (
-                  <div className="rt-menu" style={{ right: 0, top: 44, width: 280, padding: 18, textAlign: "center" }} onMouseLeave={() => setShowNotifications(false)}>
-                    <div className="rt-empty-icon" style={{ width: 44, height: 44, borderRadius: 12, marginBottom: 10 }}><Bell size={20} /></div>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>You're all caught up</div>
-                    <div style={{ fontSize: 12.5, color: "var(--rt-muted)", marginTop: 3 }}>No new notifications right now.</div>
+                  <div className="rt-menu rt-bell-menu" style={{ right: 0, top: 44, width: 340 }}>
+                    <div style={{ padding: "8px 10px", fontWeight: 700, fontSize: 13.5 }}>Notifications</div>
+                    {alerts.length === 0 && notes.length === 0 && (
+                      <div style={{ padding: "18px 10px 22px", textAlign: "center" }}>
+                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>You're all caught up</div>
+                        <div style={{ fontSize: 12.5, color: "var(--rt-muted)", marginTop: 3 }}>Nothing is due or overdue.</div>
+                      </div>
+                    )}
+                    <div style={{ maxHeight: 380, overflowY: "auto" }}>
+                      {notes.map((n) => (
+                        <div key={n.id} className="rt-note">
+                          <div className="rt-note-title">{n.message}</div>
+                          <div className="rt-note-sub">{new Date(n.createdAt).toLocaleString()}</div>
+                        </div>
+                      ))}
+                      {alerts.map((a) => (
+                        <button key={a.key} className="rt-note" onClick={() => openAlert(a)}>
+                          <span className="rt-note-title">{a.title}</span>
+                          <span className="rt-note-sub" style={a.kind === "overdue" ? { color: "#dc2626" } : undefined}>{pluralize(a.module.label)} · {alertWhen(a)}{a.status ? ` · ${a.status}` : ""}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

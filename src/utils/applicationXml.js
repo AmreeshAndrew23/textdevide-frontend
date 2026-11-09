@@ -62,6 +62,7 @@ export function parseEntityForRun(xml) {
     type: f.getAttribute("type") || "string",
     key: f.getAttribute("key") === "true",
     required: f.getAttribute("required") === "true",
+    autoNumber: f.getAttribute("autoNumber") || null,
     values: Array.from(f.querySelectorAll("Value")).map((v) => v.textContent.trim()).filter(Boolean),
   }));
   // Defense in depth, same reasoning as applicationModel.ts's parseEntityElement: the AI

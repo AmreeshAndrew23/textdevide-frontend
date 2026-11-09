@@ -191,6 +191,25 @@ export function buildInsights({ modules, detail, rowsByEntity, now = new Date() 
     }
   }
 
+  // ----- Alerts for the bell: dated records past due or coming up, from the app's own data -----
+  const alerts = [];
+  for (const a of analyses) {
+    if (!a.dateField || !a.rows) continue;
+    const key = a.fields.find((f) => f.key)?.name || "id";
+    for (const r of a.rows) {
+      const d = asDate(r[a.dateField.name]);
+      if (!d) continue;
+      const status = a.statusField ? r[a.statusField.name] : null;
+      if (status && ["danger", "success"].includes(toneForValue(status))) continue;
+      const days = Math.round((startOfDay(d) - today) / 86400000);
+      // Past-dated is only "overdue" if a status says it's still open.
+      const kind = days < 0 ? (a.statusField ? "overdue" : null) : days <= 1 ? "soon" : null;
+      if (!kind) continue;
+      alerts.push({ key: `${a.module.key}.${r[key]}.${kind}`, kind, days, date: d, module: a.module, row: r, title: rowLabel(a.fields, r) || humanize(a.module.label), status });
+    }
+  }
+  alerts.sort((x, y) => (x.kind === y.kind ? x.date - y.date : x.kind === "overdue" ? -1 : 1));
+
   // ----- Distribution across a linked entity: "Appointments by doctor" -----
   let distribution = null;
   for (const a of ranked) {
@@ -229,5 +248,5 @@ export function buildInsights({ modules, detail, rowsByEntity, now = new Date() 
   const emptyModules = analyses.filter((a) => a.rows && a.rows.length === 0).map((a) => a.module);
   const totalRecords = analyses.reduce((n, a) => n + (a.rows?.length || 0), 0);
 
-  return { focus: focus?.module || null, kpis, breakdowns, timeline, distribution, highlights, emptyModules, totalRecords, loading: !allLoaded };
+  return { alerts: alerts.slice(0, 30), focus: focus?.module || null, kpis, breakdowns, timeline, distribution, highlights, emptyModules, totalRecords, loading: !allLoaded };
 }

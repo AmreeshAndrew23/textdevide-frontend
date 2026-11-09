@@ -52,6 +52,15 @@ describe("dashboardInsights: a dashboard built from the app itself", () => {
     expect(ins.highlights).toContain("Total amount: 2,001");
   });
 
+  it("raises alerts for overdue and imminent open records, not finished ones", () => {
+    const withPast = { ...hospitalRows, Appointment: [
+      ...hospitalRows.Appointment,
+      { id: "a4", patientId: "p1", doctorId: "d1", appointmentDate: "2026-10-25", status: "Booked" },
+    ] };
+    const { alerts } = buildInsights({ modules: [mod("Doctor"), mod("Patient"), mod("Appointment")], detail: hospital, rowsByEntity: withPast, now: NOW });
+    expect(alerts.map((a) => [a.row.id, a.kind])).toEqual([["a4", "overdue"], ["a1", "soon"]]);
+  });
+
   it("breaks records down by status and by linked entity", () => {
     expect(ins.breakdowns[0]).toMatchObject({ title: "Appointments by status", total: 3 });
     expect(ins.breakdowns[0].buckets[0]).toMatchObject({ value: "Booked", count: 2, tone: "warning" });
