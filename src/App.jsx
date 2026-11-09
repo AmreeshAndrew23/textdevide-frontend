@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useParams } from "react-router-dom";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import Login from "./pages/Login";
@@ -25,12 +25,19 @@ function GuestRoute({ children }) {
   return user ? <Navigate to="/" /> : children;
 }
 
+// A published app at its public link — no Studio login involved.
+function PublicApp() {
+  const { slug } = useParams();
+  return <RuntimeEngine key={slug} publicSlug={slug} />;
+}
+
 export default function App() {
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
       <AuthProvider>
         <BrowserRouter>
           <Routes>
+            <Route path="/a/:slug" element={<PublicApp />} />
             <Route
               path="/login"
               element={

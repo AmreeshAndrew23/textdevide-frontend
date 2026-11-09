@@ -8,6 +8,8 @@ import { BrandMark } from "../components/StudioLayout";
 import ThemeToggle from "../components/ThemeToggle";
 import DomainMotif from "../components/DomainMotif";
 import DesignStudio from "../components/DesignStudio";
+import PublishPanel from "../components/PublishPanel";
+import { publicClientFor, setAppToken, clearAppToken } from "../api/publicClient";
 import { useAuth } from "../context/AuthContext";
 import {
   parseScreenForRun, parseEntityForRun, parseRelationshipForRun, parseDataSourceForRun, parseValidationForRun,
@@ -23,7 +25,7 @@ import {
   Copy, Boxes, Monitor, GitBranch, ListChecks, Database, Zap, Palette, KeyRound, Hash, ChevronRight, Check,
   RotateCcw, Plus, Pencil, Trash2, CheckCircle2, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronUp,
   ArrowUpDown, Upload, Image as ImageIcon, LogOut, CalendarDays, ArrowUpRight, BarChart3, PanelLeftOpen, PanelLeftClose,
-  Wallet, PieChart, Table as TableIcon, Columns3, LayoutGrid, History,
+  Wallet, PieChart, Rocket, Table as TableIcon, Columns3, LayoutGrid, History,
 } from "lucide-react";
 import { buildInsights, rowLabel } from "../utils/dashboardInsights";
 import { viewFields, availableViews, defaultView, monthGrid, groupByDay, dateKey, VIEW_LABELS } from "../utils/entityViews";
@@ -409,7 +411,11 @@ function GithubMark({ size = 16 }) {
   );
 }
 
-export default function RuntimeEngine() {
+// publicSlug set = this is a published app at /a/:slug, used by its real end users: the same Run
+// mode UI, talking to the public API with the app's own session, with all builder chrome removed.
+export default function RuntimeEngine({ publicSlug = null }) {
+  const isPublic = !!publicSlug;
+  const http = isPublic ? publicClientFor(publicSlug) : api;
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -418,6 +424,7 @@ export default function RuntimeEngine() {
   const [error, setError] = useState("");
 
   const [selectedId, setSelectedId] = useState(null);
+  const appPath = isPublic ? `/public-apps/${publicSlug}` : `/runtime-applications/${selectedId}`;
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   // Which workspace section is showing — one value instead of the old showDescribePanel/
@@ -456,6 +463,10 @@ export default function RuntimeEngine() {
   // Per-entity choice of list view (table/board/calendar/gallery/timeline), and the month the
   // calendar view is showing — presentation only, never saved.
   const [viewByEntity, setViewByEntity] = useState({});
+  const [publicUnavailable, setPublicUnavailable] = useState(false);
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [sampleResult, setSampleResult] = useState(null); // { created, skipped, firstProblem } after filling
+  const [inviteInfo, setInviteInfo] = useState(null); // { token, email } when opened from a personal invite link
   const [calMonth, setCalMonth] = useState(null);
   const [optionsCache, setOptionsCache] = useState({}); // dsName -> "loading" | [{value,label}]
   const [successMessage, setSuccessMessage] = useState("");
@@ -502,7 +513,7 @@ export default function RuntimeEngine() {
     return api.get("/runtime-applications").then((res) => setApplications(res.data)).catch(() => setApplications([]));
   }
 
-  useEffect(() => { loadApplications(); }, []);
+  useEffect(() => { if (!isPublic) loadApplications(); }, []);
 
   // Home's "Generate app" hands its description over as location.state.autoDescribe — consumed
   // exactly once (the ref also covers StrictMode's double effect run), then cleared from history
@@ -538,6 +549,7 @@ export default function RuntimeEngine() {
     setAuditEvents(null);
     setShowAskDrawer(false);
     setAskSeed(null);
+    setSampleResult(null);
     setGenDescription(""); setGenError(""); setPendingXml(null); setShowXmlInReview(false);
     setLoggedIn(false); setLoggedInIdentity(null); setLoggedInRole(null); setMustChangePassword(false);
     setRunMode(false);
@@ -612,7 +624,7 @@ export default function RuntimeEngine() {
     setModuleCounts(Object.fromEntries(modules.map((m) => [m.key, "loading"])));
     setModuleRows(Object.fromEntries(modules.map((m) => [m.key, "loading"])));
     modules.forEach((m) => {
-      api.get(`/runtime-applications/${appId}/entities/${m.key}/rows`)
+      http.get(`${isPublic ? `/public-apps/${publicSlug}` : `/runtime-applications/${appId}`}/entities/${m.key}/rows`)
         .then((res) => {
           setModuleCounts((c) => ({ ...c, [m.key]: res.data.rows.length }));
           setModuleRows((r) => ({ ...r, [m.key]: res.data.rows }));
@@ -622,6 +634,28 @@ export default function RuntimeEngine() {
           setModuleRows((r) => ({ ...r, [m.key]: null }));
         });
     });
+  }
+
+  // Fills an empty app with AI-made example records, from the Run-mode bar or the Overview.
+  function addSampleData() {
+    setSampleBusy(true);
+    setError("");
+    return api.post(`/runtime-applications/${selectedId}/sample-data`)
+      .then((res) => {
+        setSampleResult(res.data);
+        if (runMode) openDashboard();
+      })
+      .catch((e) => setError(typeof e.response?.data?.detail === "string" ? e.response.data.detail : "Couldn't create sample data — try again."))
+      .finally(() => setSampleBusy(false));
+  }
+
+  function removeSampleData() {
+    if (!window.confirm("Remove the sample records? Any edits you made to them are lost.")) return;
+    setSampleBusy(true);
+    api.delete(`/runtime-applications/${selectedId}/sample-data`)
+      .then(() => setSampleResult(null))
+      .catch(() => setError("Couldn't remove the sample data — try again."))
+      .finally(() => setSampleBusy(false));
   }
 
   // Back to the Dashboard with fresh data — records may have been added/edited since it loaded.
@@ -642,6 +676,7 @@ export default function RuntimeEngine() {
   // Deep-link from Home's project grid (/runtime-engine?id=123) straight into that application's
   // workspace. With no id there's nothing to show here — the project list lives on Home.
   useEffect(() => {
+    if (isPublic) return;
     const idParam = searchParams.get("id");
     // Same deliberate exception as the GitHub callback effect below: this reacts to an external
     // signal (the URL changing — a card click on Home, or the header's project switcher).
@@ -689,6 +724,7 @@ export default function RuntimeEngine() {
   }
 
   function handleLogout() {
+    if (isPublic) { clearAppToken(publicSlug); setModuleRows({}); setModuleCounts({}); loadPublicApp(); return; }
     if (!selectedId) return;
     setLoggingOut(true);
     api.post(`/runtime-applications/${selectedId}/auth/logout`)
@@ -708,7 +744,7 @@ export default function RuntimeEngine() {
     setUploadingFields((u) => ({ ...u, [bind]: true }));
     const formData = new FormData();
     formData.append("file", file);
-    api.post(`/runtime-applications/${selectedId}/uploads`, formData)
+    http.post(`${appPath}/uploads`, formData)
       .then((res) => setRunFieldValues((cur) => ({ ...cur, [bind]: res.data.url })))
       .catch((e) => setError(e.response?.data?.message || e.response?.data?.detail || "Image upload failed."))
       .finally(() => setUploadingFields((u) => ({ ...u, [bind]: false })));
@@ -723,7 +759,7 @@ export default function RuntimeEngine() {
 
   function loadGridRows(entityName, includeDeleted) {
     setGridLoading(true);
-    api.get(`/runtime-applications/${selectedId}/entities/${entityName}/rows`, { params: includeDeleted ? { includeDeleted: "true" } : {} })
+    http.get(`${appPath}/entities/${entityName}/rows`, { params: includeDeleted ? { includeDeleted: "true" } : {} })
       .then((res) => setGridRows(res.data.rows))
       .catch(() => { setGridRows([]); setError("Failed to load this entity's rows."); })
       .finally(() => setGridLoading(false));
@@ -732,7 +768,7 @@ export default function RuntimeEngine() {
   function restoreGridRow(entityName, row, keyField) {
     const key = row[keyField];
     setRestoringKey(key);
-    api.post(`/runtime-applications/${selectedId}/entities/${entityName}/rows/${encodeURIComponent(key)}/restore`)
+    http.post(`${appPath}/entities/${entityName}/rows/${encodeURIComponent(key)}/restore`)
       .then(() => loadGridRows(entityName, showDeleted))
       .catch((e) => setError(e.response?.data?.message || e.response?.data?.detail || "Failed to restore this record."))
       .finally(() => setRestoringKey(null));
@@ -744,7 +780,7 @@ export default function RuntimeEngine() {
   function ensureDataSourceOptions(dsName) {
     if (!dsName || !selectedId || optionsCache[dsName]) return;
     setOptionsCache((c) => ({ ...c, [dsName]: "loading" }));
-    api.get(`/runtime-applications/${selectedId}/datasources/${dsName}/options`)
+    http.get(`${appPath}/datasources/${dsName}/options`)
       .then((res) => setOptionsCache((c) => ({ ...c, [dsName]: res.data.options })))
       .catch(() => setOptionsCache((c) => ({ ...c, [dsName]: [] })));
   }
@@ -804,6 +840,49 @@ export default function RuntimeEngine() {
     openElement(targetEl, row);
   }
 
+  // A published app's definition is filtered per viewer by the server, so it's fetched again
+  // whenever the session changes (sign-in, sign-out) rather than kept from the anonymous load.
+  function loadPublicApp() {
+    return http.get(`/public-apps/${publicSlug}`)
+      .then((res) => {
+        const d = res.data;
+        setDetail(d);
+        setSelectedId(d.id);
+        setRunMode(true);
+        setRunMessages([]);
+        const session = d.session;
+        setLoggedIn(!!session);
+        setLoggedInIdentity(session?.identity ?? null);
+        setLoggedInRole(session?.role ?? null);
+        setMustChangePassword(session?.mustChangePassword === true);
+        const screenNamed = (name) => d.elements.find((e) => e.tag === "Screen" && e.name === name);
+        if (!session) {
+          clearAppToken(publicSlug);
+          const loginEl = screenNamed("Login");
+          const signupEl = screenNamed("Signup");
+          const token = new URLSearchParams(window.location.search).get("invite");
+          if (!loginEl) setPublicUnavailable(true);
+          else if (token && signupEl) {
+            http.get(`/public-apps/${publicSlug}/invite-check`, { params: { token } })
+              .then((r) => { setInviteInfo({ token, email: r.data.email }); openElement(signupEl, { email: r.data.email }); })
+              .catch(() => {
+                openElement(loginEl);
+                setRunMessages([{ type: "message", messageType: "error", value: "This invitation link has expired or was already used. Ask for a new one." }]);
+              });
+          } else openElement(loginEl);
+        } else if (session.mustChangePassword && screenNamed("ChangePassword")) {
+          openElement(screenNamed("ChangePassword"));
+        } else {
+          setActiveElement(null);
+          loadModuleCounts(d.id, buildAppModules(d, session.role));
+        }
+      })
+      .catch((e) => { if (e.response?.status !== 401) setPublicUnavailable(true); });
+  }
+
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- loading the app when the page opens
+  useEffect(() => { if (isPublic) loadPublicApp(); }, []);
+
   function runAction(action, overrideFieldValues) {
     if (!activeElement || activeElement.tag !== "Screen") return Promise.resolve();
     let fieldValues = overrideFieldValues || runFieldValues;
@@ -818,8 +897,9 @@ export default function RuntimeEngine() {
     setRunning(true);
     setRunMessages([]);
     setSuccessMessage("");
-    return api.post(`/runtime-applications/${selectedId}/screens/${activeElement.name}/run`, {
+    return http.post(`${appPath}/screens/${activeElement.name}/run`, {
       elementId: action, action, fieldValues,
+      ...(action === "register" && inviteInfo ? { inviteToken: inviteInfo.token } : {}),
     })
       .then((res) => {
         const resultActions = res.data.actions || [];
@@ -837,6 +917,13 @@ export default function RuntimeEngine() {
         // applicationEngine.ts) — the cookie itself is already set server-side by the time this
         // response arrives.
         const session = resultActions.find((a) => a.type === "session");
+        if (session && isPublic) {
+          setAppToken(publicSlug, res.data.appToken);
+          setInviteInfo(null);
+          window.history.replaceState(null, "", window.location.pathname);
+          loadPublicApp();
+          return resultActions;
+        }
         if (session) {
           setLoggedIn(true);
           setLoggedInIdentity(session.identity);
@@ -930,7 +1017,7 @@ export default function RuntimeEngine() {
     if (!activeElement || !screenForRun?.entity) return;
     const key = runFieldValues[screenKeyField];
     if (!key) return;
-    api.get(`/runtime-applications/${selectedId}/entities/${screenForRun.entity}/rows/${encodeURIComponent(key)}`)
+    http.get(`${appPath}/entities/${screenForRun.entity}/rows/${encodeURIComponent(key)}`)
       .then((res) => openElement(activeElement, res.data.row))
       .catch((e) => setError(e.response?.data?.message || e.response?.data?.detail || "Failed to reload this record."));
   }
@@ -1429,7 +1516,7 @@ export default function RuntimeEngine() {
       control = <textarea id={id} className="rt-input" rows={3} disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} style={{ resize: "vertical" }} />;
     } else {
       const isEmail = /email/i.test(f.bind || "");
-      control = <input id={id} className="rt-input" type={isEmail ? "email" : "text"} disabled={f.readonly} value={value} onChange={(e) => setValue(e.target.value)} placeholder={isEmail ? "name@example.com" : ""} />;
+      control = <input id={id} className="rt-input" type={isEmail ? "email" : "text"} disabled={f.readonly || (isEmail && !!inviteInfo)} value={value} onChange={(e) => setValue(e.target.value)} placeholder={isEmail ? "name@example.com" : ""} />;
     }
     return (
       <div key={f.bind} className={span2 ? "span-2" : undefined}>
@@ -1525,6 +1612,9 @@ export default function RuntimeEngine() {
             )}
             <h1 className="rt-heading" style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em", margin: 0 }}>{title}</h1>
             {sub && <div style={{ color: "var(--rt-muted)", fontSize: 14, marginTop: 6, marginBottom: 24 }}>{sub}</div>}
+            {inviteInfo && name === "Signup" && (
+              <div className="rt-alert info" style={{ marginBottom: 16 }}><Info size={16} /> You've been invited to {detail.name}. Create your account to join.</div>
+            )}
             {name === "ChangePassword" && mustChangePassword && (
               <div className="rt-alert warning" style={{ marginBottom: 16 }}><AlertTriangle size={16} /> You must change your password before continuing.</div>
             )}
@@ -1970,7 +2060,7 @@ export default function RuntimeEngine() {
     const [idBg, idFg] = avatarColors(identity);
     return (
       <div className={rtClass} style={{ ...rtVars, position: "fixed", inset: 0, zIndex: 100, display: "flex", flexDirection: "column" }}>
-        <div className="rt-builder-bar">
+        {!isPublic && <div className="rt-builder-bar">
           <button onClick={exitRunMode} title="Back to the Studio workspace"><ArrowLeft size={14} /> Studio</button>
           <span style={{ width: 1, height: 18, background: "#2a3042" }} />
           <span className="rt-live-dot" />
@@ -1978,9 +2068,14 @@ export default function RuntimeEngine() {
           <span style={{ color: "#5d657b" }}>·</span>
           <span style={{ color: "#e8eaf2", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{detail.name}</span>
           <div style={{ flex: 1 }} />
+          {modules.length > 0 && modules.every((m) => moduleCounts[m.key] === 0) && (
+            <button onClick={addSampleData} disabled={sampleBusy} title="Fill this empty app with made-up example records">
+              <Sparkles size={14} /> {sampleBusy ? "Creating sample data…" : "Add sample data"}
+            </button>
+          )}
           <button onClick={() => setShowAskDrawer(true)} title="Ask anything about this application's setup"><MessageSquareText size={14} /> Ask</button>
           <button className="bb-ai" onClick={() => setShowFixModal(true)} title="Fix or update this application"><Wrench size={14} /> Fix / Update</button>
-        </div>
+        </div>}
 
         {showFixModal && (
           // className="studio-root" here is load-bearing, not decorative: every --st-* color
@@ -2238,6 +2333,14 @@ export default function RuntimeEngine() {
     );
   }
 
+  if (isPublic) {
+    return (
+      <div className="studio-root" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--bg)", color: "var(--muted)", fontSize: 14, padding: 24, textAlign: "center" }}>
+        {publicUnavailable ? "This app isn't available. Check the link, or ask its owner." : <span className="spinner" />}
+      </div>
+    );
+  }
+
   // ===== The Studio workspace for one application =====
   // One header (back to Projects, project switcher, the Describe → Review → Run flow, primary
   // actions) over a left rail of sections. The flow stepper is the spine: an empty app starts at
@@ -2354,6 +2457,7 @@ export default function RuntimeEngine() {
             {navItem("describe", isEmptyApp ? "Describe app" : "AI builder", Sparkles)}
             {navItem("ask", "Ask about app", MessageSquareText, { disabled: isEmptyApp })}
             {navItem("design", "Design", Palette, { disabled: isEmptyApp })}
+            {navItem("publish", "Publish", Rocket, { disabled: isEmptyApp })}
             {navItem("run", "Run app", Play, { onClick: () => enterAppOrDescribe(detail), disabled: !canRun, active: false })}
 
             <div className="nav-group-label">Explore</div>
@@ -2439,6 +2543,22 @@ export default function RuntimeEngine() {
                       <button className="studio-btn-secondary" onClick={() => goToSection("design")}><Palette size={15} /> Design</button>
                       <button className="studio-btn-primary" onClick={() => enterAppOrDescribe(detail)} disabled={!canRun}><Play size={14} fill="currentColor" /> Run app</button>
                     </div>
+                  </div>
+
+                  <div className="studio-card" style={{ padding: "14px 18px", marginTop: 16, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", boxShadow: "none" }}>
+                    <Sparkles size={17} style={{ color: "var(--accent)" }} />
+                    <div style={{ flex: 1, minWidth: 220 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13.5 }}>Sample data</div>
+                      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 2 }}>
+                        {sampleResult
+                          ? `Added ${sampleResult.created} example records${sampleResult.skipped ? `; skipped ${sampleResult.skipped} that broke a rule (${sampleResult.firstProblem})` : ""}.`
+                          : "Fill empty modules with made-up records to see this app working."}
+                      </div>
+                    </div>
+                    <button className="studio-btn-secondary studio-btn-sm" onClick={addSampleData} disabled={sampleBusy}>
+                      {sampleBusy ? <><span className="spinner" style={{ width: 13, height: 13 }} /> Working…</> : "Add sample data"}
+                    </button>
+                    <button className="studio-btn-ghost studio-btn-sm" onClick={removeSampleData} disabled={sampleBusy}>Remove</button>
                   </div>
 
                   {/* Stats */}
@@ -2622,6 +2742,15 @@ export default function RuntimeEngine() {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* ----- Publish ----- */}
+            {detail && !detailLoading && section === "publish" && !activeElement && (
+              <PublishPanel
+                applicationId={selectedId}
+                appName={detail.name}
+                onAddSignIn={() => { setGenDescription("Add user accounts: users sign up and log in with email and password."); goToSection("describe"); }}
+              />
             )}
 
             {/* ----- Design ----- */}
