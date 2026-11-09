@@ -87,7 +87,7 @@ export default function DesignStudio({ applicationId, detail, onDetailChange }) 
   function saveThemeXml(themeXml, message) {
     setSaving(true);
     setError("");
-    return api.patch(`/runtime-applications/${applicationId}`, { xml: `<Application>\n${themeXml}\n</Application>` })
+    return api.patch(`/runtime-applications/${applicationId}`, { xml: `<Application>\n${themeXml}\n</Application>`, label: "design change" })
       .then(() => api.get(`/runtime-applications/${applicationId}`))
       .then((res) => {
         onDetailChange(res.data);

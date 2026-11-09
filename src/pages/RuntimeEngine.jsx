@@ -9,6 +9,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import DomainMotif from "../components/DomainMotif";
 import DesignStudio from "../components/DesignStudio";
 import PublishPanel from "../components/PublishPanel";
+import VersionHistory from "../components/VersionHistory";
 import { publicClientFor, setAppToken, clearAppToken } from "../api/publicClient";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -702,7 +703,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
     // brand-new, empty-application case this same condition already distinguishes.
     const isFix = detail && detail.elements.length > 0;
     const request = isFix
-      ? api.patch(`/runtime-applications/${selectedId}`, { xml: pendingXml })
+      ? api.patch(`/runtime-applications/${selectedId}`, { xml: pendingXml, label: genDescription.slice(0, 120) })
       : api.put(`/runtime-applications/${selectedId}`, { xml: pendingXml });
     request
       .then(() => {
@@ -2472,6 +2473,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
             <div className="nav-group-label">Explore</div>
             {navItem("er", "Data model", Network, { disabled: isEmptyApp })}
             {navItem("xml", "Full XML", FileCode2, { disabled: isEmptyApp })}
+            {navItem("history", "History", History, { disabled: isEmptyApp })}
             {navItem("audit", "Audit log", ShieldCheck)}
 
             {detail && !isEmptyApp && (
@@ -2751,6 +2753,11 @@ export default function RuntimeEngine({ publicSlug = null }) {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* ----- History ----- */}
+            {detail && !detailLoading && section === "history" && !activeElement && (
+              <VersionHistory applicationId={selectedId} onRestored={setDetail} />
             )}
 
             {/* ----- Publish ----- */}
