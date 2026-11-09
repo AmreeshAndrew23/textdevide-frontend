@@ -49,6 +49,7 @@ describe("dashboardInsights: a dashboard built from the app itself", () => {
     expect(ins.timeline.items.map((i) => i.row.id)).toEqual(["a1", "a2"]);
     expect(ins.timeline.items[0].context).toEqual(["Asha Nair", "Dr. Rao"]);
     expect(ins.highlights[0]).toBe("1 appointment today");
+    expect(ins.highlights).toContain("Total amount: 2,001");
   });
 
   it("breaks records down by status and by linked entity", () => {

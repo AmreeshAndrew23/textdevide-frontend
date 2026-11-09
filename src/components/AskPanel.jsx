@@ -90,7 +90,7 @@ export default function AskPanel({ applicationId, detail, variant = "page", seed
     api.post(`/runtime-applications/${applicationId}/ask`, { question, history })
       .then((res) => setThread((cur) => cur.map((t) => (t.id === id ? { id, question, answer: res.data.answer } : t))))
       .catch((e) => {
-        const message = e.response?.data?.detail;
+        const message = e.response?.data?.detail ?? e.response?.data?.message;
         const error = typeof message === "string" ? message : "Couldn't get an answer — check your connection and try again.";
         setThread((cur) => cur.map((t) => (t.id === id ? { id, question, error } : t)));
       });

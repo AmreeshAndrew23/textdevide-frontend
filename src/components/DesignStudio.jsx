@@ -79,7 +79,10 @@ export default function DesignStudio({ applicationId, detail, onDetailChange }) 
   // Three deterministic variations per shuffle (seeded), so they're stable across re-renders.
   const variations = [0, 1, 2].map((i) => generateVariation(detail, seed * 3 + i, keepColors && Number.isFinite(baseHue) ? { hue: baseHue } : {}));
 
-  const errText = (e, fallback) => (typeof e?.response?.data?.detail === "string" ? e.response.data.detail : fallback);
+  const errText = (e, fallback) => {
+    const text = e?.response?.data?.detail ?? e?.response?.data?.message;
+    return typeof text === "string" ? text : fallback;
+  };
 
   function saveThemeXml(themeXml, message) {
     setSaving(true);

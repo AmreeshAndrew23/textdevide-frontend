@@ -637,6 +637,85 @@ select.rt-input { appearance: none; padding-right: 34px; background-image: url("
 .rt-comp-minimal .rt-dash-kpis { gap: 0 !important; border: 1px solid var(--rt-border); border-radius: 12px; overflow: hidden; background: var(--rt-surface); }
 .rt-comp-minimal .rt-dash-kpis .rt-kpi { border: none; border-radius: 0; border-right: 1px solid var(--rt-border); }
 
+/* ======================================================================================
+   Phones: the sidebar becomes a slide-in menu, the icon rail a bottom tab bar, the top
+   navigation a scrolling row, and tables stack into one card per record.
+   ====================================================================================== */
+.rt-mobile-only { display: none !important; }
+@media (max-width: 760px) {
+  .rt-mobile-only { display: inline-flex !important; }
+  .rt-desktop-only { display: none !important; }
+
+  .rt-sidebar:not(.rail) { position: fixed; top: 0; bottom: 0; left: 0; z-index: 60; width: 272px !important; transform: translateX(-100%); transition: transform 0.2s ease; box-shadow: none; }
+  .rt-sidebar:not(.rail).mobile-open { transform: none; box-shadow: 0 0 60px rgba(0, 0, 0, 0.35); }
+  .rt-sidebar:not(.rail) .rt-sidebar-foot { display: none; }
+  .rt-nav-backdrop { position: fixed; inset: 0; z-index: 55; background: rgba(0, 0, 0, 0.4); }
+
+  .rt-sidebar.rail { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; width: 100%; height: 66px; flex-direction: row; border-right: none; border-top: 1px solid var(--nav-border); padding-bottom: env(safe-area-inset-bottom); }
+  .rt-sidebar.rail .rt-brand, .rt-sidebar.rail .rt-sidebar-foot, .rt-sidebar.rail .rt-nav-sep { display: none; }
+  .rt-sidebar.rail .rt-nav { display: flex; align-items: stretch; gap: 2px; padding: 6px; overflow-x: auto; overflow-y: hidden; flex: 1; }
+  .rt-sidebar.rail .rt-nav > div { display: flex; gap: 2px; }
+  .rt-sidebar.rail .rt-nav-item { flex: 0 0 72px; width: 72px; margin: 0; padding: 7px 2px; }
+  .rt-sidebar.rail .rt-nav-item.active::before { display: none; }
+  .rt-sidebar.rail ~ .rt-main .rt-content { padding-bottom: 92px; }
+
+  .rt-topnav { height: auto; flex-wrap: wrap; padding: 8px 12px; gap: 6px; }
+  .rt-topnav .rt-brand { border-right: none; margin-right: 0; padding: 0; flex: 1; min-width: 0; }
+  .rt-topnav-links { order: 3; flex: 0 0 100%; overflow-x: auto; scrollbar-width: none; }
+  .rt-topnav-links::-webkit-scrollbar { display: none; }
+  .rt-topnav .rt-nav-item.active::before { bottom: 0; }
+
+  .rt-topbar { height: 56px; padding: 0 12px; gap: 8px; }
+  .rt-topbar .rt-crumbs > :not(.current):not(:last-child), .rt-topbar .rt-crumbs > button:last-of-type:not(:last-child) { display: none; }
+  .rt-topbar .rt-search, .rt-topnav .rt-search { display: none; }
+  .rt-topbar button span[style*="text-align"], .rt-topnav button span[style*="text-align"] { display: none; }
+  .rt-content { padding: 16px 14px 40px; }
+  .rt-shell.topnav .rt-content { padding-top: 14px; }
+
+  .rt-page-title { font-size: 21px; }
+  .rt-page-head { align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+  .rt-page-head > div:last-child { width: 100%; }
+  .rt-page-head > div:last-child .rt-btn { flex: 1; }
+  .rt-toolbar { padding: 10px 12px; }
+  .rt-toolbar .rt-search { display: block; width: 100% !important; max-width: none; }
+
+  /* Dashboard: inline grid columns need !important. */
+  .rt-dash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px !important; }
+  .rt-dash-main, .rt-dash-secondary { grid-template-columns: minmax(0, 1fr) !important; }
+  .rt-kpi { padding: 14px; }
+  .rt-kpi-value { font-size: 24px !important; }
+  .rt-hero { padding: 20px 18px; }
+  .rt-hero .rt-heading, .rt-minimal-head .rt-heading { font-size: 23px !important; }
+  .rt-hero-motif { opacity: 0.14 !important; }
+  .rt-comp-minimal .rt-dash-kpis .rt-kpi { border-bottom: 1px solid var(--rt-border); }
+
+  /* Tables: one card per record, each cell labeled by its column. */
+  .rt-table-wrap { overflow: visible; padding: 10px; }
+  .rt-table, .rt-table tbody, .rt-table tr, .rt-table td { display: block; width: 100%; max-width: none; }
+  .rt-table thead { display: none; }
+  .rt-table tbody tr { background: var(--rt-surface); border: 1px solid var(--rt-border); border-radius: var(--rt-radius); padding: 6px 12px; margin-bottom: 10px; }
+  .rt-table tbody td { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 7px 0; border: none !important; white-space: normal; text-align: right; background: transparent !important; border-radius: 0 !important; }
+  .rt-table tbody td[data-label]::before { content: attr(data-label); color: var(--rt-muted); font-size: 12.5px; font-weight: 500; text-align: left; flex-shrink: 0; }
+  .rt-table td.primary-cell { font-size: 14.5px; justify-content: flex-start; text-align: left; }
+  .rt-table td.primary-cell::before { display: none; }
+  .rt-table td.actions { width: 100%; justify-content: flex-end; }
+  .rt-row-actions { opacity: 1; }
+  .rt-pager { justify-content: space-between; }
+
+  .rt-form-grid { padding: 16px 14px 4px; }
+  .rt-form-foot { padding: 12px 14px; flex-wrap: wrap; }
+  .rt-form-foot .rt-btn { flex: 1; }
+  .rt-board { padding: 12px; scroll-snap-type: x mandatory; }
+  .rt-board-col { flex: 0 0 84%; scroll-snap-align: center; }
+  .rt-cal { padding: 10px; }
+  .rt-gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 10px; }
+  .rt-timeline { padding: 6px 12px 14px; }
+  .rt-seg button span { display: none; }
+  .rt-input, select.rt-input { font-size: 16px; } /* below 16px, iOS zooms the page on focus */
+  .rt-auth-card { padding-bottom: 24px; }
+  .rt-auth.centered .rt-auth-card { padding: 24px 18px; }
+}
+
 /* ----- Token overrides (validated <Tokens>, see designTokens.js) — they refine whatever the
    design language set, so they win over the style rules. ----- */
 .rt-app.rt-tok-shadow .rt-card, .rt-app.rt-tok-shadow .rt-rec, .rt-app.rt-tok-shadow .rt-gal-card { box-shadow: var(--rt-tok-shadow) !important; }

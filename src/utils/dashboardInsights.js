@@ -166,10 +166,14 @@ export function buildInsights({ modules, detail, rowsByEntity, now = new Date() 
 
   // ----- Timeline: the next dated records (or the latest, if nothing is upcoming) -----
   let timeline = null;
+  let upcomingTotal = 0;
   const dated = ranked.find((a) => a.dateField && a.rows && a.rows.length > 0);
   if (dated) {
     const withDates = dated.rows.map((r) => ({ r, d: asDate(r[dated.dateField.name]) })).filter((x) => x.d);
-    const upcoming = withDates.filter((x) => x.d >= today).sort((x, y) => x.d - y.d);
+    // Something finished or cancelled isn't coming up, even if its date is in the future.
+    const stillOpen = (r) => !dated.statusField || !["danger", "success"].includes(toneForValue(r[dated.statusField.name]));
+    const upcoming = withDates.filter((x) => x.d >= today && stillOpen(x.r)).sort((x, y) => x.d - y.d);
+    upcomingTotal = upcoming.length;
     const mode = upcoming.length > 0 ? "upcoming" : "recent";
     const list = (mode === "upcoming" ? upcoming : withDates.sort((x, y) => y.d - x.d)).slice(0, 6);
     if (list.length > 0) {
@@ -212,7 +216,7 @@ export function buildInsights({ modules, detail, rowsByEntity, now = new Date() 
   const highlights = [];
   if (timeline?.mode === "upcoming") {
     const todayCount = timeline.items.filter((i) => startOfDay(i.date).getTime() === today.getTime()).length;
-    const total = dated.rows.filter((r) => { const d = asDate(r[dated.dateField.name]); return d && d >= today; }).length;
+    const total = upcomingTotal;
     highlights.push(todayCount > 0
       ? `${todayCount} ${(todayCount === 1 ? dated.module.label : pluralize(dated.module.label)).toLowerCase()} today`
       : `${total} upcoming ${(total === 1 ? dated.module.label : pluralize(dated.module.label)).toLowerCase()}`);
@@ -220,7 +224,7 @@ export function buildInsights({ modules, detail, rowsByEntity, now = new Date() 
   const attentionKpi = kpis.find((k) => k.kind === "attention");
   if (attentionKpi) highlights.push(`${attentionKpi.value} ${(attentionKpi.value === 1 ? attentionKpi.module.label : pluralize(attentionKpi.module.label)).toLowerCase()} need attention`);
   const moneyKpi = kpis.find((k) => k.kind === "money");
-  if (moneyKpi) highlights.push(`${moneyKpi.value.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${moneyKpi.label.replace(/^Total /, "")}`);
+  if (moneyKpi) highlights.push(`${moneyKpi.label}: ${moneyKpi.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
 
   const emptyModules = analyses.filter((a) => a.rows && a.rows.length === 0).map((a) => a.module);
   const totalRecords = analyses.reduce((n, a) => n + (a.rows?.length || 0), 0);

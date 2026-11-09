@@ -6,7 +6,10 @@ import api from "../api/client";
 // the people using it. Publishing snapshots the definition — later Studio edits stay private until
 // "Publish changes" — while records are shared between the Studio and the live app.
 
-const errorText = (e, fallback) => (typeof e?.response?.data?.detail === "string" ? e.response.data.detail : fallback);
+const errorText = (e, fallback) => {
+  const text = e?.response?.data?.detail ?? e?.response?.data?.message;
+  return typeof text === "string" ? text : fallback;
+};
 
 export default function PublishPanel({ applicationId, appName, onAddSignIn }) {
   const [state, setState] = useState(null);

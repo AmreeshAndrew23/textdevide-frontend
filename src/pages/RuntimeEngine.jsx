@@ -25,7 +25,7 @@ import {
   Copy, Boxes, Monitor, GitBranch, ListChecks, Database, Zap, Palette, KeyRound, Hash, ChevronRight, Check,
   RotateCcw, Plus, Pencil, Trash2, CheckCircle2, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronUp,
   ArrowUpDown, Upload, Image as ImageIcon, LogOut, CalendarDays, ArrowUpRight, BarChart3, PanelLeftOpen, PanelLeftClose,
-  Wallet, PieChart, Rocket, Table as TableIcon, Columns3, LayoutGrid, History,
+  Wallet, PieChart, Rocket, Menu, Table as TableIcon, Columns3, LayoutGrid, History,
 } from "lucide-react";
 import { buildInsights, rowLabel } from "../utils/dashboardInsights";
 import { viewFields, availableViews, defaultView, monthGrid, groupByDay, dateKey, VIEW_LABELS } from "../utils/entityViews";
@@ -460,6 +460,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
   const [gridPageSize, setGridPageSize] = useState(10);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showMoreNav, setShowMoreNav] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false); // the slide-in menu on phones
   // Per-entity choice of list view (table/board/calendar/gallery/timeline), and the month the
   // calendar view is showing — presentation only, never saved.
   const [viewByEntity, setViewByEntity] = useState({});
@@ -645,7 +646,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
         setSampleResult(res.data);
         if (runMode) openDashboard();
       })
-      .catch((e) => setError(typeof e.response?.data?.detail === "string" ? e.response.data.detail : "Couldn't create sample data — try again."))
+      .catch((e) => setError(e.response?.data?.detail || e.response?.data?.message || "Couldn't create sample data — try again."))
       .finally(() => setSampleBusy(false));
   }
 
@@ -1408,7 +1409,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
                         <tr key={row[screenKeyField] ?? i} className={`${editable ? "clickable" : ""}${row.__deletedAt ? " deleted" : ""}`}
                           onClick={() => editable && openRowForEdit(screenForRun.grid.rowClick.targetScreen, row)}>
                           {columns.map((c, ci) => (
-                            <td key={c.bind} className={`${ci === 0 ? "primary-cell" : ""}${numericBind(c.bind) ? " num" : ""}`}>{renderGridCell(row, c, ci === 0)}</td>
+                            <td key={c.bind} data-label={c.header} className={`${ci === 0 ? "primary-cell" : ""}${numericBind(c.bind) ? " num" : ""}`}>{renderGridCell(row, c, ci === 0)}</td>
                           ))}
                           <td className="actions" onClick={(e) => e.stopPropagation()}>
                             {row.__deletedAt ? (
@@ -1646,7 +1647,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
                   <GoogleLogin
                     onSuccess={(credentialResponse) => runAction("googleLogin", { credential: credentialResponse.credential })}
                     onError={() => setRunMessages([{ type: "message", messageType: "error", value: "Google sign-in failed." }])}
-                    theme="outline" size="large" width="400" text={name === "Signup" ? "signup_with" : "signin_with"}
+                    theme="outline" size="large" width={String(Math.min(400, window.innerWidth - 100))} text={name === "Signup" ? "signup_with" : "signin_with"}
                   />
                   {GITHUB_CLIENT_ID && (
                     <button type="button" className="rt-btn rt-btn-secondary" onClick={handleGithubOAuthClick} style={{ width: "100%", padding: "10px 14px" }}>
@@ -2226,8 +2227,14 @@ export default function RuntimeEngine({ publicSlug = null }) {
                         <ModuleIcon entity={m.key} icon={m.icon} size={16} /> {pluralize(m.label)}
                       </button>
                     ))}
+                    {/* Phones scroll one row of links, so there's no "More" menu to clip. */}
+                    {overflow.map((m) => (
+                      <button key={m.key} className={`rt-nav-item rt-mobile-only${isModuleActive(m) ? " active" : ""}`} onClick={() => openElement(m.screenEl)}>
+                        <ModuleIcon entity={m.key} icon={m.icon} size={16} /> {pluralize(m.label)}
+                      </button>
+                    ))}
                     {overflow.length > 0 && (
-                      <div style={{ position: "relative" }}>
+                      <div className="rt-desktop-only" style={{ position: "relative" }}>
                         <button className={`rt-nav-item${overflow.some(isModuleActive) ? " active" : ""}`} onClick={() => setShowMoreNav((v) => !v)}>More <ChevronDown size={14} /></button>
                         {showMoreNav && (
                           <div className="rt-menu" style={{ left: 0, top: 46 }} onMouseLeave={() => setShowMoreNav(false)}>
@@ -2260,7 +2267,8 @@ export default function RuntimeEngine({ publicSlug = null }) {
           const collapsed = !rail && sidebarCollapsed;
           return (
             <div className="rt-shell">
-              <aside className={`rt-sidebar${rail ? " rail" : ""}${collapsed ? " collapsed" : ""}`}>
+              {mobileNavOpen && <div className="rt-nav-backdrop" onClick={() => setMobileNavOpen(false)} />}
+              <aside className={`rt-sidebar${rail ? " rail" : ""}${collapsed ? " collapsed" : ""}${mobileNavOpen ? " mobile-open" : ""}`}>
                 <div className="rt-brand" title={detail.name}>
                   {brandMark}
                   {!rail && !collapsed && (
@@ -2270,7 +2278,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
                     </div>
                   )}
                 </div>
-                <nav className="rt-nav">
+                <nav className="rt-nav" onClick={() => setMobileNavOpen(false)}>
                   <button className={`rt-nav-item${!activeElement ? " active" : ""}`} onClick={openDashboard} title="Dashboard">
                     <LayoutDashboard size={rail ? 20 : 18} strokeWidth={1.8} /> {rail ? <span>Home</span> : !collapsed && "Dashboard"}
                   </button>
@@ -2308,6 +2316,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
               </aside>
               <div className="rt-main">
                 <header className="rt-topbar">
+                  {!rail && <button className="rt-icon-btn rt-mobile-only" onClick={() => setMobileNavOpen(true)} title="Menu" aria-label="Open menu"><Menu size={20} /></button>}
                   {crumbs}
                   <div style={{ flex: 1 }} />
                   {topActions}
