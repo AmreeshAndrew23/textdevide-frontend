@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Rocket, Copy, Check, ExternalLink, UserPlus, Trash2, RefreshCw, CircleOff, Sparkles } from "lucide-react";
 import api from "../api/client";
+import { parseEntityForRun, parseRelationshipForRunFull, humanize } from "../utils/applicationXml";
 
 // The Studio's Publish section: put an app on its public link, control who can join, and manage
 // the people using it. Publishing snapshots the definition — later Studio edits stay private until
@@ -11,7 +12,23 @@ const errorText = (e, fallback) => {
   return typeof text === "string" ? text : fallback;
 };
 
-export default function PublishPanel({ applicationId, appName, onAddSignIn }) {
+// What can limit an entity's records: its creator, a link to a person, or a stored email.
+function accessOptions(entityEl, detail, accountName) {
+  const relationships = detail.elements.filter((e) => e.tag === "Relationship").map((e) => parseRelationshipForRunFull(e.xml));
+  const entities = new Map(detail.elements.filter((e) => e.tag === "Entity").map((e) => [e.name, parseEntityForRun(e.xml).fields]));
+  const options = [{ value: "creator", label: "Only records they created" }];
+  for (const f of parseEntityForRun(entityEl.xml).fields) {
+    const rel = relationships.find((r) => r.fromEntity === entityEl.name && r.fromField === f.name);
+    if (rel && (rel.toEntity === accountName || entities.get(rel.toEntity)?.some((x) => /email/i.test(x.name)))) {
+      options.push({ value: f.name, label: `Only where they are the ${humanize(rel.toEntity).toLowerCase()}` });
+    } else if (!rel && /email/i.test(f.name)) {
+      options.push({ value: f.name, label: `Only where ${humanize(f.name).toLowerCase()} is theirs` });
+    }
+  }
+  return options;
+}
+
+export default function PublishPanel({ applicationId, appName, detail, onDetailChange, onAddSignIn }) {
   const [state, setState] = useState(null);
   const [slug, setSlug] = useState("");
   const [busy, setBusy] = useState(false);
@@ -50,6 +67,17 @@ export default function PublishPanel({ applicationId, appName, onAddSignIn }) {
   function copyInvite(invite) {
     navigator.clipboard?.writeText(`${url}?invite=${invite.token}`)
       .then(() => { setCopiedInvite(invite.id); setTimeout(() => setCopiedInvite(null), 1500); }).catch(() => {});
+  }
+
+  // Saved like any other change, so it appears in History and needs "Publish changes" to go live.
+  function saveAccess(entityEl, scopeBy, exempt) {
+    const doc = new DOMParser().parseFromString(entityEl.xml, "text/xml");
+    const root = doc.documentElement;
+    if (scopeBy) root.setAttribute("scopeBy", scopeBy); else root.removeAttribute("scopeBy");
+    if (scopeBy && exempt.length) root.setAttribute("scopeExempt", exempt.join(",")); else root.removeAttribute("scopeExempt");
+    const xml = new XMLSerializer().serializeToString(root);
+    act(() => api.patch(base, { xml: `<Application>${xml}</Application>`, label: `record access for ${entityEl.name}` })
+      .then(() => api.get(base)).then((res) => onDetailChange(res.data)), "Couldn't save that setting.");
   }
 
   function addInvite() {
@@ -127,6 +155,49 @@ export default function PublishPanel({ applicationId, appName, onAddSignIn }) {
               )}
             </div>
           </div>
+
+          {(() => {
+            const entityEls = detail.elements.filter((e) => e.tag === "Entity");
+            const account = entityEls.find((e) => parseEntityForRun(e.xml).isAccount)?.name;
+            const roleEntity = detail.elements.filter((e) => e.tag === "Relationship").map((e) => parseRelationshipForRunFull(e.xml)).find((r) => r.fromEntity === account && r.fromField === "roleId")?.toEntity;
+            const rows = entityEls.filter((e) => e.name !== account && e.name !== roleEntity);
+            return (
+              <div className="studio-card" style={{ padding: 20, boxShadow: "none" }}>
+                <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Who sees which records</div>
+                <p style={{ fontSize: 12.5, color: "var(--muted)", margin: "0 0 10px", lineHeight: 1.5 }}>
+                  Choose whether people see every record or only their own. To match someone through a link (like an appointment's doctor), the linked record's email must be the one they sign in with. The Studio preview always shows everything.
+                </p>
+                {state.accessProblems.map((p) => <div key={p} style={{ color: "var(--warning)", fontSize: 12.5, marginBottom: 8 }}>{p}</div>)}
+                {rows.map((el) => {
+                  const root = new DOMParser().parseFromString(el.xml, "text/xml").documentElement;
+                  const scopeBy = root.getAttribute("scopeBy") || "";
+                  const exempt = (root.getAttribute("scopeExempt") || "").split(",").map((r) => r.trim()).filter(Boolean);
+                  return (
+                    <div key={el.name} style={{ padding: "9px 0", borderTop: "1px solid var(--border)", fontSize: 13 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <span style={{ flex: 1, minWidth: 140, fontWeight: 600 }}>{humanize(el.name)}</span>
+                        <select className="studio-select" style={{ width: 290 }} value={scopeBy} disabled={busy} onChange={(e) => saveAccess(el, e.target.value, exempt)}>
+                          <option value="">Everyone sees all records</option>
+                          {accessOptions(el, detail, account).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          {scopeBy && !accessOptions(el, detail, account).some((o) => o.value === scopeBy) && <option value={scopeBy}>Limited by {scopeBy}</option>}
+                        </select>
+                      </div>
+                      {scopeBy && state.roles.length > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 8, fontSize: 12.5, color: "var(--muted)" }}>
+                          These roles still see everything:
+                          {state.roles.map((r) => (
+                            <label key={r} style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--text-2)", cursor: "pointer" }}>
+                              <input type="checkbox" checked={exempt.includes(r)} disabled={busy} onChange={(e) => saveAccess(el, scopeBy, e.target.checked ? [...exempt, r] : exempt.filter((x) => x !== r))} /> {r}
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           {state.supportsInvites && (
             <div className="studio-card" style={{ padding: 20, boxShadow: "none" }}>

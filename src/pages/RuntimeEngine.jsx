@@ -2765,6 +2765,8 @@ export default function RuntimeEngine({ publicSlug = null }) {
               <PublishPanel
                 applicationId={selectedId}
                 appName={detail.name}
+                detail={detail}
+                onDetailChange={setDetail}
                 onAddSignIn={() => { setGenDescription("Add user accounts: users sign up and log in with email and password."); goToSection("describe"); }}
               />
             )}
