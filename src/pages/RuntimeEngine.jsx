@@ -467,6 +467,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
   const [viewByEntity, setViewByEntity] = useState({});
   const [publicUnavailable, setPublicUnavailable] = useState(false);
   const [sampleBusy, setSampleBusy] = useState(false);
+  const [genCheck, setGenCheck] = useState(null); // the AI self-check's result for pendingXml
   const [sampleResult, setSampleResult] = useState(null); // { created, skipped, firstProblem } after filling
   const [inviteInfo, setInviteInfo] = useState(null); // { token, email } when opened from a personal invite link
   const [calMonth, setCalMonth] = useState(null);
@@ -537,7 +538,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
     setShowXmlInReview(false);
     const existingXml = d && d.elements.length > 0 ? buildFullXml(d) : undefined;
     api.post("/runtime-applications/generate", { description, existingXml })
-      .then((res) => setPendingXml(res.data.xml))
+      .then((res) => { setPendingXml(res.data.xml); setGenCheck(res.data.check ?? null); })
       .catch((e) => setGenError(e.response?.data?.message || e.response?.data?.detail || "Failed to generate — try rephrasing the description."))
       .finally(() => setGenerating(false));
   }
@@ -691,6 +692,20 @@ export default function RuntimeEngine({ publicSlug = null }) {
   // applications with real end-user accounts.
   function findAccountEntityEl(d) {
     return d?.elements.find((e) => e.tag === "Entity" && parseEntityForRun(e.xml).isAccount) || null;
+  }
+
+  function renderGenCheck() {
+    if (!genCheck) return null;
+    const { repaired, remaining, warnings } = genCheck;
+    const line = (color, text) => <div style={{ fontSize: 12.5, color, lineHeight: 1.5 }}>{text}</div>;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, margin: "12px 0" }}>
+        {remaining.length === 0 && line("var(--success)", repaired > 0 ? `Checked: the AI found and fixed ${repaired} problem${repaired === 1 ? "" : "s"}.` : "Checked: no broken links or screens found.")}
+        {remaining.length > 0 && line("var(--warning)", `Checked: ${remaining.length} problem${remaining.length === 1 ? "" : "s"} couldn't be fixed automatically. You can still apply this, but these parts may not work:`)}
+        {remaining.slice(0, 8).map((p) => line("var(--warning)", `• ${p}`))}
+        {warnings.slice(0, 5).map((w) => line("var(--muted)", w))}
+      </div>
+    );
   }
 
   function handleApplyDescription() {
@@ -2108,6 +2123,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
               {pendingXml && (
                 <div style={{ marginTop: 16 }}>
                   <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, color: "var(--st-text)" }}>Review before applying:</div>
+                  {renderGenCheck()}
                   <pre className="code-block" style={{ maxHeight: "35vh" }}>{pendingXml}</pre>
                   <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
                     <button className="studio-btn-ai" onClick={handleApplyDescription} disabled={applying}>
@@ -2738,6 +2754,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
                           <span>Everything not listed stays exactly as it is.</span>
                         </div>
                       )}
+                      {renderGenCheck()}
                       {showXmlInReview && <pre className="code-block" style={{ marginTop: 14, maxHeight: "42vh" }}>{pendingXml}</pre>}
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16 }}>
                         <button className="studio-btn-ai" onClick={handleApplyDescription} disabled={applying}>
