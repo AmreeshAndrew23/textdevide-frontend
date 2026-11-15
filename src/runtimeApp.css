@@ -730,3 +730,30 @@ button.rt-note:hover { background: var(--rt-canvas); }
 .rt-app.rt-tok-shadow .rt-card, .rt-app.rt-tok-shadow .rt-rec, .rt-app.rt-tok-shadow .rt-gal-card { box-shadow: var(--rt-tok-shadow) !important; }
 .rt-app.rt-tok-bw .rt-card, .rt-app.rt-tok-bw .rt-rec, .rt-app.rt-tok-bw .rt-gal-card { border-width: var(--rt-tok-bw) !important; border-style: solid; border-color: var(--rt-border); }
 .rt-app.rt-tok-hw .rt-page-title, .rt-app.rt-tok-hw .rt-heading, .rt-app.rt-tok-hw .rt-card-title, .rt-app.rt-tok-hw .rt-kpi-value { font-weight: var(--rt-heading-weight) !important; }
+
+/* ----- Import CSV dialog (CsvImportDialog.jsx) — themed by the app's own tokens ----- */
+.rt-modal-backdrop { position: fixed; inset: 0; z-index: 200; background: rgba(15, 23, 42, 0.45); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; padding: 16px; animation: rtFade 0.14s ease both; }
+.rt-modal { width: 620px; max-width: 100%; max-height: calc(100vh - 32px); display: flex; flex-direction: column; background: var(--rt-surface); color: var(--rt-text); border: 1px solid var(--rt-border); border-radius: calc(var(--rt-radius) + 6px); box-shadow: var(--rt-shadow-lg); overflow: hidden; }
+.rt-modal-head { display: flex; align-items: flex-start; gap: 12px; padding: 20px 22px 14px; border-bottom: 1px solid var(--rt-border); }
+.rt-modal-title { font-weight: 700; font-size: 17px; }
+.rt-modal-sub { font-size: 13px; color: var(--rt-muted); margin-top: 3px; line-height: 1.45; }
+.rt-modal-body { padding: 18px 22px; overflow-y: auto; }
+.rt-modal-foot { display: flex; align-items: center; gap: 8px; padding: 14px 22px; border-top: 1px solid var(--rt-border); background: var(--rt-canvas); }
+.rt-dropzone { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 34px 16px; border: 2px dashed var(--rt-border-strong); border-radius: calc(var(--rt-radius) + 4px); background: var(--rt-canvas); color: var(--rt-text); cursor: pointer; font: inherit; transition: border-color 0.12s, background 0.12s; }
+.rt-dropzone svg { color: var(--rt-primary); }
+.rt-dropzone:hover { border-color: var(--rt-primary); background: var(--rt-primary-softer); }
+.rt-map { display: flex; flex-direction: column; border: 1px solid var(--rt-border); border-radius: var(--rt-radius); overflow: hidden; }
+.rt-map-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--rt-border); }
+.rt-map-row:last-child { border-bottom: none; }
+.rt-map-col { min-width: 0; font-size: 13.5px; }
+.rt-map-sample { font-size: 12px; color: var(--rt-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.rt-import-errors { max-height: 260px; overflow-y: auto; border: 1px solid var(--rt-border); border-radius: var(--rt-radius); font-size: 13px; }
+.rt-import-errors > div { display: flex; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--rt-border); color: var(--rt-text-2); }
+.rt-import-errors > div:last-child { border-bottom: none; }
+.rt-import-errors .row { flex-shrink: 0; width: 58px; font-weight: 600; color: var(--rt-text); font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) {
+  .rt-modal-backdrop { align-items: flex-end; padding: 0; }
+  .rt-modal { border-radius: 16px 16px 0 0; max-height: 92vh; }
+  .rt-map-row { grid-template-columns: 1fr; gap: 6px; }
+  .rt-modal-foot { flex-wrap: wrap; }
+}

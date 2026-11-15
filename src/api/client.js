@@ -21,4 +21,19 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Requests that use the AI allowance — when one finishes (or is refused for being over it), the
+// usage meter refreshes. The event name matches components/AiUsageMeter.jsx's AI_USAGE_EVENT.
+const AI_ROUTES = /\/runtime-applications\/(generate|\d+\/(ask|design|sample-data))$/;
+const aiUsed = (config) => config?.method === "post" && AI_ROUTES.test(config.url || "");
+api.interceptors.response.use(
+  (res) => {
+    if (aiUsed(res.config)) window.dispatchEvent(new Event("textdev:ai-usage"));
+    return res;
+  },
+  (error) => {
+    if (aiUsed(error.config)) window.dispatchEvent(new Event("textdev:ai-usage"));
+    return Promise.reject(error);
+  }
+);
+
 export default api;

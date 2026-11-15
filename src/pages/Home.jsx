@@ -4,6 +4,7 @@ import { Sparkles, ArrowRight, Search, Download, Trash2, Boxes, Monitor, Plus, F
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import StudioLayout from "../components/StudioLayout";
+import TemplateGallery from "../components/TemplateGallery";
 import { buildFullXml, downloadTextFile, xmlFilenameFor } from "../utils/applicationXml";
 
 // The Studio's home — replaces the old Dashboard (its project workspace was for the retired engine;
@@ -12,12 +13,6 @@ import { buildFullXml, downloadTextFile, xmlFilenameFor } from "../utils/applica
 // description to the Runtime Engine page, which starts generating immediately (see its
 // location.state.autoDescribe handling). Existing projects sit underneath as cards.
 
-const EXAMPLES = [
-  { label: "Insurance claims", name: "Insurance Claims", text: "An insurance claims app with customers, policies, claims and adjusters. Each policy belongs to a customer and can have many claims; each claim is assigned to an adjuster and has a status, amount and incident date. Claim amounts must be positive." },
-  { label: "HR & leave", name: "HR Leave Manager", text: "An HR app with employees, departments and leave requests. Employees belong to a department; leave requests have a type (annual, sick, unpaid), start and end dates, and an approval status. End date can't be before start date." },
-  { label: "Inventory", name: "Inventory Tracker", text: "An inventory app with products, suppliers, warehouses and stock movements. Each movement records a product, warehouse, quantity and direction (in/out). Quantity must be greater than zero." },
-  { label: "Clinic", name: "Clinic Appointments", text: "A clinic app with patients, doctors and appointments. Users sign up and log in. Each appointment links a patient and a doctor with a date, time slot and status (booked, completed, cancelled)." },
-];
 
 function nameFromDescription(text) {
   const words = text.replace(/^(an?|the)\s+/i, "").split(/\s+/).slice(0, 4).join(" ");
@@ -52,8 +47,8 @@ export default function Home() {
 
   // Name is optional — left blank, a short one is derived from the description, so the fastest
   // path really is "type what you want, press Enter".
-  function create({ blank = false } = {}) {
-    const text = description.trim();
+  function create({ blank = false, template = null } = {}) {
+    const text = template ? template.prompt : description.trim();
     if (!blank && !text) {
       setNudge(true);
       descriptionRef.current?.focus();
@@ -61,7 +56,7 @@ export default function Home() {
     }
     setCreating(true);
     setError("");
-    const appName = name.trim() || (blank ? "Untitled app" : nameFromDescription(text));
+    const appName = template ? template.name : name.trim() || (blank ? "Untitled app" : nameFromDescription(text));
     api.post("/runtime-applications", { name: appName })
       .then((res) => navigate(`/runtime-engine?id=${res.data.id}`, { state: blank ? undefined : { autoDescribe: text } }))
       .catch((e) => { setError(e.response?.data?.detail || "Couldn't create the project."); setCreating(false); });
@@ -123,14 +118,18 @@ export default function Home() {
             </button>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center", marginTop: 14 }}>
-          {EXAMPLES.map((ex) => (
-            <button key={ex.label} className="chip" onClick={() => { setDescription(ex.text); setName(ex.name); }}>
-              {ex.label}
-            </button>
-          ))}
-        </div>
         {error && <div style={{ textAlign: "center", color: "var(--danger)", fontSize: 13, marginTop: 14 }}>{error}</div>}
+
+        <TemplateGallery
+          busy={creating}
+          onUse={(t) => create({ template: t })}
+          onCustomize={(t) => {
+            setDescription(t.prompt);
+            setName(t.name);
+            descriptionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+            setTimeout(() => descriptionRef.current?.focus({ preventScroll: true }), 350);
+          }}
+        />
 
         {/* Projects */}
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 56, marginBottom: 16 }}>
@@ -158,7 +157,7 @@ export default function Home() {
           <div className="studio-card" style={{ padding: "40px 24px", textAlign: "center", boxShadow: "none", borderStyle: "dashed" }}>
             <FolderOpen size={28} style={{ color: "var(--muted)" }} />
             <div style={{ fontWeight: 600, marginTop: 10 }}>No projects yet</div>
-            <div style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Describe an app above, or pick one of the examples to get started.</div>
+            <div style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Describe an app above, or start from one of the templates.</div>
           </div>
         )}
 

@@ -294,3 +294,55 @@ html.theme-switching, html.theme-switching * { transition: background-color 0.25
    of a dimmed, disabled-looking call to action. */
 @keyframes nudge { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(5px); } 60% { transform: translateX(-3px); } 80% { transform: translateX(2px); } }
 .composer-nudge { animation: nudge 0.42s ease; border-color: var(--accent) !important; box-shadow: 0 0 0 3px var(--accent-ring) !important; }
+
+/* ----- AI usage meter (AiUsageMeter.jsx) ----- */
+.ai-meter-pill { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.ai-meter-pill svg { color: var(--accent); }
+.ai-meter-pill:hover { color: var(--text); border-color: var(--accent); }
+.ai-meter-pill.low { background: var(--warning-soft); border-color: var(--warning); color: var(--text); }
+.ai-meter-pill.low svg { color: var(--warning); }
+.ai-meter-pill.out { background: var(--danger-soft); border-color: var(--danger); color: var(--text); }
+.ai-meter-pill.out svg { color: var(--danger); }
+.ai-meter-nav { display: flex; flex-direction: column; gap: 7px; width: 100%; padding: 9px 10px; margin-bottom: 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font: inherit; font-size: 12.5px; cursor: pointer; text-align: left; }
+.ai-meter-nav:hover { border-color: var(--accent); color: var(--text); }
+.ai-meter-row { display: flex; align-items: center; gap: 7px; }
+.ai-meter-row svg { color: var(--accent); }
+.ai-meter-row strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.ai-meter-track { display: block; height: 5px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.ai-meter-track span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.ai-meter-nav.low .ai-meter-track span { background: var(--warning); }
+.ai-meter-nav.out .ai-meter-track span { background: var(--danger); }
+.ai-usage-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ai-usage-tiles > div { display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+.ai-usage-tiles span { font-size: 11.5px; color: var(--muted); }
+.ai-usage-tiles strong { font-size: 22px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.ai-usage-tiles em { font-style: normal; font-size: 11.5px; color: var(--text-2); }
+.ai-usage-chart { display: flex; align-items: flex-end; gap: 2px; height: 110px; padding-bottom: 1px; border-bottom: 1px solid var(--border); }
+.ai-usage-col { position: relative; flex: 1; height: 100%; display: flex; align-items: flex-end; justify-content: center; outline: none; cursor: default; }
+.ai-usage-bar { display: block; width: 70%; max-width: 18px; border-radius: 4px 4px 0 0; background: var(--accent); opacity: 0.85; transition: opacity 0.1s; }
+.ai-usage-bar.on { opacity: 1; }
+.ai-usage-col:focus-visible .ai-usage-bar { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ai-usage-tip { position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); z-index: 2; padding: 7px 10px; border-radius: 8px; background: var(--surface-3); border: 1px solid var(--border); color: var(--text-2); font-size: 11.5px; white-space: nowrap; box-shadow: 0 8px 20px -8px rgba(0, 0, 0, 0.35); pointer-events: none; }
+.ai-usage-tip.left { left: auto; right: 0; transform: none; }
+.ai-usage-tip strong { color: var(--text); }
+.ai-usage-kinds { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; font-size: 13px; }
+.ai-usage-kinds > div { display: flex; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.ai-usage-kinds > div:last-child { border-bottom: none; }
+@media (max-width: 480px) { .ai-usage-tiles { grid-template-columns: 1fr; } }
+
+/* ----- Template gallery (TemplateGallery.jsx) — each card tinted by its template's --tpl ----- */
+.chip.chip-active { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.tpl-cats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.tpl-card { display: flex; flex-direction: column; text-align: left; padding: 0; overflow: hidden; border-radius: 14px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.tpl-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tpl-art { height: 92px; padding: 10px 14px 0; color: var(--tpl); background: linear-gradient(135deg, color-mix(in srgb, var(--tpl) 22%, var(--surface)), color-mix(in srgb, var(--tpl) 6%, var(--surface))); border-bottom: 1px solid var(--border); }
+.tpl-art svg { fill: none; stroke: currentColor; opacity: 0.75; }
+.tpl-body { padding: 13px 15px 15px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.tpl-cat { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.tpl-name { font-weight: 700; font-size: 15px; }
+.tpl-blurb { font-size: 12.5px; color: var(--text-2); line-height: 1.45; flex: 1; }
+.tpl-meta { display: flex; align-items: center; gap: 5px; margin-top: 8px; font-size: 11.5px; color: var(--muted); }
+.tpl-hero { position: relative; height: 150px; padding: 20px 22px; display: flex; align-items: flex-end; color: rgba(255, 255, 255, 0.35); background: linear-gradient(135deg, var(--tpl), color-mix(in srgb, var(--tpl) 55%, #0b0d14)); overflow: hidden; }
+.tpl-hero svg { fill: none; stroke: currentColor; }
+.tpl-label { font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }

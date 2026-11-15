@@ -4,6 +4,7 @@ import { Sparkles, LayoutGrid, Library, Coins, Settings, LogOut, X as XIcon } fr
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import ThemeToggle from "./ThemeToggle";
+import AiUsageMeter from "./AiUsageMeter";
 
 // The Studio's own outer shell for top-level pages — brand, primary navigation, and the signed-in
 // account (settings, admin, log out) in one fixed left sidebar, so every top-level page reads as
@@ -82,6 +83,7 @@ export default function StudioLayout({ active, children }) {
             </button>
           ))}
         </nav>
+        <AiUsageMeter variant="nav" />
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, display: "flex", flexDirection: "column", gap: 2 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px 10px" }}>
             {user?.picture

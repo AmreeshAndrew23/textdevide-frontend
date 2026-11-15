@@ -10,6 +10,8 @@ import DomainMotif from "../components/DomainMotif";
 import DesignStudio from "../components/DesignStudio";
 import PublishPanel from "../components/PublishPanel";
 import VersionHistory from "../components/VersionHistory";
+import CsvImportDialog from "../components/CsvImportDialog";
+import AiUsageMeter from "../components/AiUsageMeter";
 import { publicClientFor, setAppToken, clearAppToken } from "../api/publicClient";
 import { useAuth } from "../context/AuthContext";
 import {
@@ -235,6 +237,22 @@ function describeElement(el) {
   }
   return el.tag;
 }
+
+// entityName -> the rows last fetched for it, so reopening a list is instant (see loadGridRows).
+// Belongs to one app and one signed-in person (`owner`): a different one starts empty. Outside the
+// component, since only one app is ever open at a time and nothing renders from it directly.
+let rowsCacheStore = { owner: null, map: new Map() };
+function rowsCacheFor(owner) {
+  if (rowsCacheStore.owner !== owner) rowsCacheStore = { owner, map: new Map() };
+  return rowsCacheStore.map;
+}
+function clearRowsCache() {
+  rowsCacheStore = { owner: null, map: new Map() };
+}
+// Only the newest list request may fill the grid (see loadGridRows).
+let gridRequestTicket = 0;
+const nextGridTicket = () => ++gridRequestTicket;
+const isLatestGridTicket = (ticket) => ticket === gridRequestTicket;
 
 // A real searchable lookup picker for any FK/dropdown field, universal across every generated
 // app (driven purely by the optionsFrom/DataSource data every app already has — no per-app XML
@@ -490,6 +508,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
   const [calMonth, setCalMonth] = useState(null);
   const [optionsCache, setOptionsCache] = useState({}); // dsName -> "loading" | [{value,label}]
   const [successMessage, setSuccessMessage] = useState("");
+  const [importingEntity, setImportingEntity] = useState(null);
   const [uploadingFields, setUploadingFields] = useState({}); // field bind -> true while its picture is uploading
 
   // Real per-application end-user accounts (see backend-node's runtimeEngine/appAuth.ts) — only
@@ -646,6 +665,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
     modules.forEach((m) => {
       http.get(`${isPublic ? `/public-apps/${publicSlug}` : `/runtime-applications/${appId}`}/entities/${m.key}/rows`)
         .then((res) => {
+          if (isPublic || appId === selectedId) rowsCache().set(m.key, res.data.rows);
           setModuleCounts((c) => ({ ...c, [m.key]: res.data.rows.length }));
           setModuleRows((r) => ({ ...r, [m.key]: res.data.rows }));
         })
@@ -662,6 +682,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
     setError("");
     return api.post(`/runtime-applications/${selectedId}/sample-data`)
       .then((res) => {
+        clearRowsCache();
         setSampleResult(res.data);
         if (runMode) openDashboard();
       })
@@ -673,7 +694,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
     if (!window.confirm("Remove the sample records? Any edits you made to them are lost.")) return;
     setSampleBusy(true);
     api.delete(`/runtime-applications/${selectedId}/sample-data`)
-      .then(() => setSampleResult(null))
+      .then(() => { clearRowsCache(); setSampleResult(null); })
       .catch(() => setError("Couldn't remove the sample data — try again."))
       .finally(() => setSampleBusy(false));
   }
@@ -791,19 +812,52 @@ export default function RuntimeEngine({ publicSlug = null }) {
       .catch(() => setError("Failed to delete this application."));
   }
 
+  // A list opens instantly with the rows it showed last time (or the Dashboard just loaded) and is
+  // refreshed in the background; only a list never seen before shows the loading state. Only the
+  // newest request may fill the grid — a slow reply for a module the user already left is dropped.
+  function rowsCache() {
+    return rowsCacheFor(`${appPath}|${loggedInIdentity ?? ""}`);
+  }
+
   function loadGridRows(entityName, includeDeleted) {
-    setGridLoading(true);
+    const ticket = nextGridTicket();
+    const cached = includeDeleted ? null : rowsCache().get(entityName);
+    if (cached) { setGridRows(cached); setGridLoading(false); } else setGridLoading(true);
     http.get(`${appPath}/entities/${entityName}/rows`, { params: includeDeleted ? { includeDeleted: "true" } : {} })
-      .then((res) => setGridRows(res.data.rows))
-      .catch(() => { setGridRows([]); setError("Failed to load this entity's rows."); })
-      .finally(() => setGridLoading(false));
+      .then((res) => {
+        if (!includeDeleted) rowsCache().set(entityName, res.data.rows);
+        if (isLatestGridTicket(ticket)) setGridRows(res.data.rows);
+      })
+      .catch(() => { if (isLatestGridTicket(ticket) && !cached) { setGridRows([]); setError("Failed to load this entity's rows."); } })
+      .finally(() => { if (isLatestGridTicket(ticket)) setGridLoading(false); });
+  }
+
+  function gridScreenForEntity(entityName) {
+    return detail?.elements.find((e) => e.tag === "Screen" && !AUTH_SCREEN_NAMES.has(e.name) && parseScreenForRun(e.xml).grid?.entity === entityName) || null;
+  }
+
+  // After a save or delete: whatever showed this entity's records is out of date — its cached
+  // list, and every dropdown that lists them (a new Doctor must appear in a Visit's Doctor picker).
+  // savedRow (from a save) goes straight into the cached list, so going back to it shows the change
+  // before the background refresh even returns.
+  function recordsChanged(entityName, savedRow, keyField) {
+    if (!entityName || !detail) return;
+    const cache = rowsCache();
+    const list = cache.get(entityName);
+    if (savedRow && keyField && Array.isArray(list)) {
+      const at = list.findIndex((r) => String(r[keyField]) === String(savedRow[keyField]));
+      cache.set(entityName, at >= 0 ? list.map((r, i) => (i === at ? savedRow : r)) : [savedRow, ...list]);
+    } else cache.delete(entityName);
+    const sources = detail.elements.filter((e) => e.tag === "DataSource" && parseDataSourceForRun(e.xml).entity === entityName).map((e) => e.name);
+    if (sources.length === 0) return;
+    setOptionsCache((c) => Object.fromEntries(Object.entries(c).filter(([name]) => !sources.includes(name))));
   }
 
   function restoreGridRow(entityName, row, keyField) {
     const key = row[keyField];
     setRestoringKey(key);
     http.post(`${appPath}/entities/${entityName}/rows/${encodeURIComponent(key)}/restore`)
-      .then(() => loadGridRows(entityName, showDeleted))
+      .then(() => { recordsChanged(entityName); loadGridRows(entityName, showDeleted); })
       .catch((e) => setError(e.response?.data?.message || e.response?.data?.detail || "Failed to restore this record."))
       .finally(() => setRestoringKey(null));
   }
@@ -959,6 +1013,24 @@ export default function RuntimeEngine({ publicSlug = null }) {
           if (action === "save") setSuccessMessage("Saved successfully.");
           else if (action === "delete") setSuccessMessage("Deleted — restore it from “Show deleted” if needed.");
         }
+        // The form carries on from the record as actually saved — its new version (or saving again
+        // would be refused as a stale edit), and any number or stamp the server filled in.
+        const saved = resultActions.find((a) => a.type === "record");
+        if (saved && !hasProblem) setRunFieldValues((cur) => ({ ...cur, ...saved.row }));
+        const screenEntity = parseScreenForRun(activeElement.xml)?.entity;
+        if (!hasProblem && (saved || action === "delete")) {
+          const entityEl = detail?.elements.find((e) => e.tag === "Entity" && e.name === screenEntity);
+          const keyField = entityEl ? parseEntityForRun(entityEl.xml).fields.find((f) => f.key)?.name || "id" : "id";
+          recordsChanged(screenEntity, saved?.row, keyField);
+        }
+        // A record deleted from its own form is gone: back to its list, which shows it's gone.
+        if (action === "delete" && !hasProblem && !overrideFieldValues) {
+          const gridEl = screenEntity && gridScreenForEntity(screenEntity);
+          if (gridEl && gridEl.name !== activeElement.name) {
+            openElement(gridEl);
+            setSuccessMessage("Deleted — restore it from “Show deleted” if needed.");
+          }
+        }
         // login/changePassword/verifyEmail/OAuth signal a new session this way (see
         // applicationEngine.ts) — the cookie itself is already set server-side by the time this
         // response arrives.
@@ -1041,9 +1113,20 @@ export default function RuntimeEngine({ publicSlug = null }) {
   // screen first just to remove a record.
   function deleteGridRow(row, keyField) {
     if (!window.confirm("Delete this record? You can restore it later from “Show deleted”.")) return;
-    runAction("delete", { [keyField]: row[keyField] }).then(() => {
-      const parsed = parseScreenForRun(activeElement.xml);
-      if (parsed?.grid?.entity) loadGridRows(parsed.grid.entity, showDeleted);
+    runAction("delete", { [keyField]: row[keyField] }).then((results) => {
+      const entityName = parseScreenForRun(activeElement.xml)?.grid?.entity;
+      if (!entityName) return;
+      const failed = results.length === 0 || results.some((a) => a.type === "message" && (a.messageType === "error" || a.messageType === "conflict"));
+      // Gone from the list at once (or kept, struck through, under "Show deleted"); the reload
+      // below then confirms it against the database.
+      if (!failed && Array.isArray(gridRows)) {
+        const remaining = showDeleted
+          ? gridRows.map((r) => (r[keyField] === row[keyField] ? { ...r, __deletedAt: new Date().toISOString() } : r))
+          : gridRows.filter((r) => r[keyField] !== row[keyField]);
+        setGridRows(remaining);
+        if (!showDeleted) rowsCache().set(entityName, remaining);
+      }
+      loadGridRows(entityName, showDeleted);
     });
   }
 
@@ -1127,9 +1210,6 @@ export default function RuntimeEngine({ publicSlug = null }) {
   const { className: rtClass, style: rtVars } = designToCss(design);
   useDesignFonts(design.bodyFont, design.headingFont);
   const screenEntityIcon = screenEntityDef ? parseEntityForRun(screenEntityDef.xml).icon : null;
-  const gridScreenForEntity = (entityName) =>
-    detail?.elements.find((e) => e.tag === "Screen" && !AUTH_SCREEN_NAMES.has(e.name) && parseScreenForRun(e.xml).grid?.entity === entityName) || null;
-
   function renderRunMessages() {
     if (runMessages.length === 0) return null;
     return (
@@ -1193,6 +1273,9 @@ export default function RuntimeEngine({ publicSlug = null }) {
     const newRecordScreenName = screenForRun.grid.rowClick?.targetScreen;
     const newRecordEl = newRecordScreenName ? detail.elements.find((e) => e.tag === "Screen" && e.name === newRecordScreenName) : null;
     const openNewRecordForm = () => { if (newRecordEl) openElement(newRecordEl); };
+    // Import is offered wherever a record can be added by hand — never for user accounts, who
+    // join by invite (the server applies the same rule).
+    const canImport = !!newRecordEl && !(screenEntityDef && parseEntityForRun(screenEntityDef.xml).isAccount);
     const fieldTypeOf = (bind) => (fkColumnMap[bind] ? "string" : screenEntityFields.find((fd) => fd.name === bind)?.type);
     const total = visibleGridRows?.length || 0;
     const pageCount = Math.max(1, Math.ceil(total / gridPageSize));
@@ -1247,11 +1330,26 @@ export default function RuntimeEngine({ publicSlug = null }) {
               {gridRows ? `${gridRows.length} ${gridRows.length === 1 ? "record" : "records"}${showDeleted ? " · including deleted" : ""}` : "Loading records…"}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {canImport && <button className="rt-btn rt-btn-secondary" onClick={() => setImportingEntity(entity)}><Upload size={15} /> Import</button>}
             <button className="rt-btn rt-btn-secondary" onClick={exportCsv} disabled={!total}><Download size={15} /> Export</button>
             {newRecordEl && <button className="rt-btn rt-btn-primary" onClick={openNewRecordForm}><Plus size={16} strokeWidth={2.4} /> New {label}</button>}
           </div>
         </div>
+
+        {importingEntity === entity && (
+          <CsvImportDialog
+            http={http}
+            appPath={appPath}
+            entity={entity}
+            label={label}
+            plural={plural}
+            fields={screenEntityFields}
+            columnHeaders={Object.fromEntries(columns.map((c) => [c.bind, c.header]))}
+            onClose={() => setImportingEntity(null)}
+            onImported={() => loadGridRows(entity, showDeleted)}
+          />
+        )}
 
         {successMessage && <div className="rt-alert success" style={{ marginBottom: 16 }}><CheckCircle2 size={16} /> {successMessage}</div>}
 
@@ -2533,6 +2631,7 @@ export default function RuntimeEngine({ publicSlug = null }) {
           </div>
         </div>
 
+        <AiUsageMeter />
         <ThemeToggle />
         <button className="studio-btn-ghost studio-btn-sm" onClick={() => detail && downloadTextFile(xmlFilenameFor(detail.name), buildFullXml(detail))} disabled={!detail || isEmptyApp} title="Download the application XML">
           <Download size={14} /> XML

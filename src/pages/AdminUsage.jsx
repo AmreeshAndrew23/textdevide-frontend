@@ -53,17 +53,69 @@ function UserRow({ u }) {
   );
 }
 
+const label = { fontSize: 11, fontWeight: 600, color: "var(--st-muted)", textTransform: "uppercase", letterSpacing: 0.4 };
+
+// The App Studio's AI usage per user over the last 30 days (see the backend's services/aiUsage.ts).
+function StudioUsage({ data }) {
+  return (
+    <>
+      <div className="studio-card" style={{ padding: 18, marginBottom: 14, display: "flex", gap: 40, flexWrap: "wrap" }}>
+        <div><div style={label}>Requests today</div><div style={{ fontSize: 22, fontWeight: 800 }}>{data.today.requests}</div><div style={{ fontSize: 12, color: "var(--st-muted)" }}>{fmtCost(data.today.costUsd)} est.</div></div>
+        <div><div style={label}>Last 30 days</div><div style={{ fontSize: 22, fontWeight: 800 }}>{fmtCost(data.last30Days.costUsd)}</div><div style={{ fontSize: 12, color: "var(--st-muted)" }}>{data.last30Days.requests} requests · {fmtTokens(data.last30Days.tokens)} tokens</div></div>
+        <div><div style={label}>Daily limit per user</div><div style={{ fontSize: 22, fontWeight: 800 }}>{data.dailyLimit ?? "None"}</div><div style={{ fontSize: 12, color: "var(--st-muted)" }}>Set with AI_DAILY_LIMIT · superusers unlimited</div></div>
+      </div>
+      {data.users.length === 0 ? (
+        <div className="studio-card" style={{ padding: 18, fontSize: 13.5, color: "var(--st-muted)", marginBottom: 28 }}>No AI usage in the last 30 days.</div>
+      ) : (
+        <div className="studio-card" style={{ overflowX: "auto", marginBottom: 28 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: "left" }}>
+                {["User", "Today", "30 days", "Tokens", "Est. cost"].map((h, i) => <th key={h} style={{ ...label, padding: "12px 16px", textAlign: i ? "right" : "left", borderBottom: "1px solid var(--st-border)" }}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {data.users.map((u) => {
+                const atLimit = u.limit !== null && u.today.requests >= u.limit;
+                return (
+                  <tr key={u.userId}>
+                    <td style={{ padding: "11px 16px", borderBottom: "1px solid var(--st-border)" }}>
+                      <div style={{ fontWeight: 600 }}>{u.fullName || u.email}</div>
+                      {u.fullName && <div style={{ fontSize: 12, color: "var(--st-muted)" }}>{u.email}</div>}
+                    </td>
+                    <td style={{ padding: "11px 16px", textAlign: "right", borderBottom: "1px solid var(--st-border)", fontWeight: atLimit ? 700 : 400, color: atLimit ? "var(--st-danger)" : undefined }}>
+                      {u.today.requests}{u.limit !== null ? ` / ${u.limit}` : ""}
+                    </td>
+                    <td style={{ padding: "11px 16px", textAlign: "right", borderBottom: "1px solid var(--st-border)" }}>{u.last30Days.requests}</td>
+                    <td style={{ padding: "11px 16px", textAlign: "right", borderBottom: "1px solid var(--st-border)" }}>{fmtTokens(u.last30Days.tokens)}</td>
+                    <td style={{ padding: "11px 16px", textAlign: "right", borderBottom: "1px solid var(--st-border)", fontWeight: 600 }}>{fmtCost(u.last30Days.costUsd)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function AdminUsage() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
+  const [studio, setStudio] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.get("/admin/token-usage")
-      .then(res => setData(res.data))
-      .catch(err => setError(err.response?.status === 403 ? "Not authorized — superuser access required." : "Failed to load token usage."))
-      .finally(() => setLoading(false));
+    const denied = (err) => err.response?.status === 403;
+    Promise.allSettled([api.get("/admin/ai-usage"), api.get("/admin/token-usage")]).then(([s, t]) => {
+      if (s.status === "fulfilled") setStudio(s.value.data);
+      if (t.status === "fulfilled") setData(t.value.data);
+      const failed = [s, t].find((r) => r.status === "rejected");
+      if (failed) setError(denied(failed.reason) ? "Not authorized — superuser access required." : "Failed to load some usage data.");
+      setLoading(false);
+    });
   }, []);
 
   return (
@@ -76,8 +128,16 @@ export default function AdminUsage() {
       {loading && <div style={{ color: "var(--st-muted)", fontSize: 13.5 }}>Loading usage data...</div>}
       {error && <div className="studio-card" style={{ padding: 18, color: "var(--st-danger)", fontSize: 13.5 }}>{error}</div>}
 
+      {studio && (
+        <>
+          <div style={{ fontWeight: 700, fontSize: 16, margin: "4px 0 12px" }}>App Studio — last 30 days</div>
+          <StudioUsage data={studio} />
+        </>
+      )}
+
       {data && (
         <>
+          <div style={{ fontWeight: 700, fontSize: 16, margin: "4px 0 12px" }}>Earlier project workspace — all time</div>
           <div className="studio-card" style={{ padding: 18, marginBottom: 20, display: "flex", gap: 40 }}>
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--st-muted)", textTransform: "uppercase", letterSpacing: 0.4 }}>Grand total tokens</div>

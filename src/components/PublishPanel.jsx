@@ -37,6 +37,12 @@ export default function PublishPanel({ applicationId, appName, detail, onDetailC
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("");
   const [copiedInvite, setCopiedInvite] = useState(null);
+  const [inviteNote, setInviteNote] = useState("");
+  const [emailReady, setEmailReady] = useState(null);
+
+  useEffect(() => {
+    api.get("/email-status").then((res) => setEmailReady(!!res.data.configured)).catch(() => setEmailReady(null));
+  }, []);
 
   const load = useCallback(() => api.get(`/runtime-applications/${applicationId}/publishing`)
     .then((res) => { setState(res.data); setSlug(res.data.slug || res.data.suggestedSlug); })
@@ -80,10 +86,23 @@ export default function PublishPanel({ applicationId, appName, detail, onDetailC
       .then(() => api.get(base)).then((res) => onDetailChange(res.data)), "Couldn't save that setting.");
   }
 
+  // Says whether the invitation went out by email, so the owner knows whether to send the link.
+  function sendInvite(email, role) {
+    let sent = null;
+    return act(() => api.post(`${base}/invites`, { email, role }).then((res) => { sent = res.data; }), "Couldn't add that invitation.")
+      .then(() => {
+        if (!sent) return;
+        setInviteNote(sent.emailed
+          ? `Invitation emailed to ${sent.email}.`
+          : state.published
+            ? `Added ${sent.email}. Copy their link below and send it to them.`
+            : `Added ${sent.email}. Their link starts working once the app is published.`);
+      });
+  }
+
   function addInvite() {
     if (!inviteEmail.trim()) return;
-    act(() => api.post(`${base}/invites`, { email: inviteEmail.trim(), role: inviteRole || null }), "Couldn't add that invitation.")
-      .then(() => setInviteEmail(""));
+    sendInvite(inviteEmail.trim(), inviteRole || null).then(() => setInviteEmail(""));
   }
 
   const roleSelect = (value, onChange, none) => (
@@ -203,8 +222,17 @@ export default function PublishPanel({ applicationId, appName, detail, onDetailC
             <div className="studio-card" style={{ padding: 20, boxShadow: "none" }}>
               <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Invitations</div>
               <p style={{ fontSize: 12.5, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.5 }}>
-                Each person gets their own link: send it however you like. It works once, for that email, and expires after 14 days.{state.published ? "" : " Links start working once the app is published."}
+                {emailReady
+                  ? "Each person gets their own link by email (you can also copy it). It works once, for that email, and expires after 14 days."
+                  : "Each person gets their own link: send it however you like. It works once, for that email, and expires after 14 days."}
+                {state.published ? "" : " Links start working once the app is published."}
               </p>
+              {emailReady === false && (
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: "-4px 0 12px", lineHeight: 1.5 }}>
+                  To email invitations automatically, set <code>BREVO_API_KEY</code> and <code>EMAIL_FROM</code> on the server.
+                </p>
+              )}
+              {inviteNote && <div style={{ fontSize: 12.5, color: "var(--success)", margin: "0 0 10px", display: "flex", alignItems: "center", gap: 6 }}><Check size={13} /> {inviteNote}</div>}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <input className="studio-input" type="email" placeholder="name@company.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addInvite(); }} style={{ flex: 1, minWidth: 220 }} />
                 {state.usesRoles && roleSelect(inviteRole, (r) => setInviteRole(r || ""), "No role")}
@@ -223,7 +251,7 @@ export default function PublishPanel({ applicationId, appName, detail, onDetailC
                         </button>
                       )}
                       {!i.joined && i.expired && (
-                        <button className="studio-btn-secondary studio-btn-sm" disabled={busy} onClick={() => act(() => api.post(`${base}/invites`, { email: i.email, role: i.role }), "Couldn't renew that invitation.")}>
+                        <button className="studio-btn-secondary studio-btn-sm" disabled={busy} onClick={() => sendInvite(i.email, i.role)}>
                           <RefreshCw size={13} /> Renew
                         </button>
                       )}
